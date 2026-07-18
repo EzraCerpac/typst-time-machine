@@ -9,6 +9,16 @@ repository = "https://github.com/EzraCerpac/typst-time-machine"
 readme = "README.md"
 keywords = ["typst", "git", "jujutsu", "visual-diff"]
 categories = ["command-line-utilities", "development-tools"]
+include = [
+  "/src/**",
+  "/web/index.html",
+  "/web/styles.css",
+  "/web/dist/app.js",
+  "/web/dist/diff-worker.js",
+  "/docs/assets/typst-time-machine-demo.png",
+  "/README.md",
+  "/LICENSE",
+]
 
 [[bin]]
 name = "ttm"

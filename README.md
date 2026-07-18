@@ -5,6 +5,11 @@ It renders immutable revisions with the official Typst compiler, then opens a
 local browser where revisions can be scrubbed, pinned, blinked, wiped, overlaid,
 or compared as a pixel heatmap.
 
+![Typst Time Machine comparing two revisions with a wipe and full JJ history tree](docs/assets/typst-time-machine-demo.png)
+
+Pin A, scrub B, and drag the wipe through a JJ-backed Typst history. Git uses
+the same workflow.
+
 ## Why
 
 Source diffs explain what text changed. They do not show the resulting line
@@ -33,8 +38,12 @@ cargo install --path .
 After publication:
 
 ```sh
+brew install EzraCerpac/tap/typst-time-machine
+# or
 cargo install typst-time-machine
 ```
+
+Jujutsu is optional: install `jj` only when viewing a JJ repository.
 
 ## Use
 
@@ -155,9 +164,12 @@ cargo package --locked
 cargo publish --dry-run --locked
 ```
 
-Pushing a tag matching the crate version, such as `v0.1.0`, creates Linux
+Run the Release workflow manually while the repository is private to rehearse
+all platform builds without consuming a version tag. Pushing a tag matching the
+crate version, such as `v0.1.0`, creates Linux
 x86-64 and macOS x86-64/ARM64 archives with checksums, release notes, and a
-versioned Homebrew formula. Publishing to crates.io remains an explicit manual
+versioned Homebrew formula, then publishes it to
+`EzraCerpac/homebrew-tap`. Publishing to crates.io remains an explicit manual
 step with `cargo publish --locked`.
 
 ## Current limits
