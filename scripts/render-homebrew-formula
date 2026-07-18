@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: render-homebrew-formula <version>" >&2
+  exit 2
+fi
+
+version=$1
+base_url="https://github.com/EzraCerpac/typst-time-machine/releases/download/v${version}"
+mac_arm_sha=$(awk '{print $1}' ttm-aarch64-apple-darwin.tar.gz.sha256)
+mac_intel_sha=$(awk '{print $1}' ttm-x86_64-apple-darwin.tar.gz.sha256)
+linux_sha=$(awk '{print $1}' ttm-x86_64-unknown-linux-gnu.tar.gz.sha256)
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+sed \
+  -e "s|@VERSION@|${version}|g" \
+  -e "s|@BASE_URL@|${base_url}|g" \
+  -e "s|@MAC_ARM_SHA@|${mac_arm_sha}|g" \
+  -e "s|@MAC_INTEL_SHA@|${mac_intel_sha}|g" \
+  -e "s|@LINUX_SHA@|${linux_sha}|g" \
+  "${script_dir}/../packaging/typst-time-machine.rb.in"

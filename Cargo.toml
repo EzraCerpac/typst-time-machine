@@ -1,0 +1,36 @@
+[package]
+name = "typst-time-machine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Browse rendered Typst documents through Git and Jujutsu history"
+license = "MIT"
+repository = "https://github.com/EzraCerpac/typst-time-machine"
+readme = "README.md"
+keywords = ["typst", "git", "jujutsu", "visual-diff"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "ttm"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+directories = "6.0"
+open = "5.3"
+rand = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.27"
+tokio = { version = "1.48", features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "0.9"
+walkdir = "2.5"
+
+[profile.release]
+lto = "thin"
+strip = true
