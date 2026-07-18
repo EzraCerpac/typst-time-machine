@@ -1,33 +1,33 @@
-function fe(e,t,n){if(e?.phase!=="ready"||t?.phase!=="ready")return"waiting";let i=e.pages[n],s=t.pages[n];if(!i&&s)return"added";if(i&&!s)return"removed";if(!i||!s)return"waiting";return i.hash===s.hash?"same":"changed"}function N(e,t){if(e?.phase!=="ready"||t?.phase!=="ready")return!1;if(e.pages.length!==t.pages.length)return!1;return e.pages.every((n,i)=>n.hash===t.pages[i]?.hash)}function C(e){return e.slice(0,8)}function B(e){switch(e?.phase){case"queued":return"Waiting";case"materializing":return"Reading revision";case"compiling":return"Typesetting";case"ready":return`${e.pages.length} page${e.pages.length===1?"":"s"}`;case"entrypoint_missing":return"No document";case"error":return"Could not render";default:return"Not rendered"}}function ye(e,t){let n=new Map(e.map((a)=>[a.key,a])),i=new Map(e.map((a)=>[a.commit_id,a.key])),s=new Set(t.map((a)=>n.get(a)?.commit_id).filter((a)=>Boolean(a))),o=[],l=[];t.forEach((a,T)=>{let L=n.get(a);if(!L)return;let y=o.indexOf(L.commit_id);if(y<0)y=o.length;else o.splice(y,1);l.push({key:a,row:T,lane:y}),L.parent_ids.filter((g)=>s.has(g)).forEach((g,I)=>{if(o.includes(g))return;o.splice(Math.min(y+I,o.length),0,g)})});let f=new Map(l.map((a)=>[a.key,a])),u=t.flatMap((a)=>{let T=n.get(a);if(!T||!f.has(a))return[];return T.parent_ids.flatMap((L,y)=>{let g=i.get(L);if(!g||!f.has(g))return[];return[{child:a,parent:g,merge:y>0}]})});return{nodes:l,edges:u,laneCount:Math.max(1,...l.map((a)=>a.lane+1))}}var D=location.pathname.replace(/\/$/,""),ne=new Worker(`${D}/diff-worker.js`,{type:"module"}),E=d("#app"),qe=new Intl.DateTimeFormat(void 0,{dateStyle:"medium",timeStyle:"short"}),Ie=new Intl.DateTimeFormat(void 0,{month:"short",day:"numeric",year:"2-digit"}),r,re=new Map,ke=new Map,Se=new Map,J=new Map,p=0,$=0,h=1,K=0,w=0,m="single",b="first-parent",_=50,ae=!1,A=!1,G=0,j=!1,ve,F;ne.addEventListener("error",(e)=>{let t=document.querySelector("#heatmap-label");if(t)t.textContent=`Could not calculate heatmap: ${e.message}`});Pe();async function Pe(){E.innerHTML='<div class="boot"><span class="boot-mark">T</span><p>Reading document history…</p></div>';let e=await fetch(`${D}/api/session`);if(!e.ok)throw Error("Could not load Typst history.");r=await e.json(),re=new Map(r.revisions.map((t)=>[t.key,t])),ke=new Map(r.revisions.map((t,n)=>[t.key,n])),Se=new Map(r.revisions.map((t)=>[t.commit_id,t])),J=new Map(r.history.first_parent_keys.map((t,n)=>[t,n])),p=k(r.history.first_parent_keys[0]),$=p,h=k(r.history.first_parent_keys[1]??r.history.first_parent_keys[0]),Ne(),Ke(),z(!0)}function Ne(){let e=r.repository.root.split("/").filter(Boolean).at(-1)??"repository";E.innerHTML=`
+function W_(_,h,f){if(_?.phase!=="ready"||h?.phase!=="ready")return"waiting";let F=_.pages[f],T=h.pages[f];if(!F&&T)return"added";if(F&&!T)return"removed";if(!F||!T)return"waiting";return F.hash===T.hash?"same":"changed"}function x(_,h){if(_?.phase!=="ready"||h?.phase!=="ready")return!1;if(_.pages.length!==h.pages.length)return!1;return _.pages.every((f,F)=>f.hash===h.pages[F]?.hash)}function b(_){return _.slice(0,8)}function q(_){switch(_?.phase){case"queued":return"Waiting";case"materializing":return"Reading revision";case"compiling":return"Typesetting";case"ready":return`${_.pages.length} page${_.pages.length===1?"":"s"}`;case"entrypoint_missing":return"No document";case"error":return"Could not render";default:return"Not rendered"}}function w_(_,h){let f=new Map(_.map(($)=>[$.key,$])),F=new Map(_.map(($)=>[$.commit_id,$.key])),T=new Set(h.map(($)=>f.get($)?.commit_id).filter(($)=>Boolean($))),E=[],z=[];h.forEach(($,R)=>{let U=f.get($);if(!U)return;let X=E.indexOf(U.commit_id);if(X<0)X=E.length;else E.splice(X,1);z.push({key:$,row:R,lane:X}),U.parent_ids.filter((Z)=>T.has(Z)).forEach((Z,B)=>{if(E.includes(Z))return;E.splice(Math.min(X+B,E.length),0,Z)})});let Q=new Map(z.map(($)=>[$.key,$])),J=h.flatMap(($)=>{let R=f.get($);if(!R||!Q.has($))return[];return R.parent_ids.flatMap((U,X)=>{let Z=F.get(U);if(!Z||!Q.has(Z))return[];return[{child:$,parent:Z,merge:X>0}]})});return{nodes:z,edges:J,laneCount:Math.max(1,...z.map(($)=>$.lane+1))}}class f_{apply;scheduleFrame;cancelFrame;handle;latest;pending=!1;constructor(_,h=window.requestAnimationFrame.bind(window),f=window.cancelAnimationFrame.bind(window)){this.apply=_;this.scheduleFrame=h;this.cancelFrame=f}schedule(_){if(this.latest=_,this.pending=!0,this.handle!==void 0)return;this.handle=this.scheduleFrame(()=>{this.handle=void 0,this.applyPending()})}flush(){if(this.handle!==void 0)this.cancelFrame(this.handle),this.handle=void 0;this.applyPending()}cancel(){if(this.handle!==void 0)this.cancelFrame(this.handle),this.handle=void 0;this.latest=void 0,this.pending=!1}applyPending(){if(!this.pending)return;let _=this.latest;this.latest=void 0,this.pending=!1,this.apply(_)}}class T_{interval;apply;now;scheduleDelay;cancelDelay;timer;latest;lastApplied=Number.NEGATIVE_INFINITY;constructor(_,h,f=performance.now.bind(performance),F=window.setTimeout.bind(window),T=window.clearTimeout.bind(window)){this.interval=_;this.apply=h;this.now=f;this.scheduleDelay=F;this.cancelDelay=T}schedule(_){this.latest=_;let h=this.interval-(this.now()-this.lastApplied);if(h<=0&&this.timer===void 0){this.applyLatest();return}if(this.timer!==void 0)return;this.timer=this.scheduleDelay(()=>{this.timer=void 0,this.applyLatest()},Math.max(0,h))}flush(){if(this.timer!==void 0)this.cancelDelay(this.timer),this.timer=void 0;if(this.latest!==void 0)this.applyLatest()}applyLatest(){if(this.latest===void 0)return;let _=this.latest;this.latest=void 0,this.lastApplied=this.now(),this.apply(_)}}var d=location.pathname.replace(/\/$/,""),E_=new Worker(`${d}/diff-worker.js`,{type:"module"}),A=O("#app"),u_=new Intl.DateTimeFormat(void 0,{dateStyle:"medium",timeStyle:"short"}),g_=new Intl.DateTimeFormat(void 0,{month:"short",day:"numeric",year:"2-digit"}),D,O_=new Map,P_=new Map,S_=new Map,o=new Map,Y=0,j=0,L=1,g=0,w=0,N="single",W="first-parent",S=50,Y_=!1,p=!1,v=0,c=!1,D_=0,a_=0,k=new Map,F_=new f_((_)=>{e(_,!1)}),C_=new T_(50,(_)=>{fetch(`${d}/api/focus`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({revision_key:_.revisionKey,pinned_revision_key:_.pinnedRevisionKey,history_mode:_.historyMode,generation:_.generation})})});E_.addEventListener("error",(_)=>{let h=document.querySelector("#heatmap-label");if(h)h.textContent=`Could not calculate heatmap: ${_.message}`});d_();async function d_(){A.innerHTML='<div class="boot"><span class="boot-mark">T</span><p>Reading document history…</p></div>';let _=await fetch(`${d}/api/session`);if(!_.ok)throw Error("Could not load Typst history.");D=await _.json(),O_=new Map(D.revisions.map((h)=>[h.key,h])),P_=new Map(D.revisions.map((h,f)=>[h.key,f])),S_=new Map(D.revisions.map((h)=>[h.commit_id,h])),o=new Map(D.history.first_parent_keys.map((h,f)=>[h,f])),Y=K(D.history.first_parent_keys[0]),j=Y,L=K(D.history.first_parent_keys[1]??D.history.first_parent_keys[0]),v_(),t_(),u(!0)}function v_(){let _=D.repository.root.split("/").filter(Boolean).at(-1)??"repository";A.innerHTML=`
     <header class="masthead">
       <div class="brand">
         <span class="brand-stamp" aria-hidden="true">T</span>
         <div>
           <p class="eyebrow">Typst Time Machine</p>
-          <h1>${M(r.target.entry)}</h1>
+          <h1>${C(D.target.entry)}</h1>
         </div>
       </div>
       <div class="repo-facts">
-        <span class="vcs">${r.repository.kind}</span>
-        <strong>${M(e)}</strong>
-        <span>${r.revisions.length} revisions</span>
-        <span title="${M(r.compiler)}">${M(r.compiler)}</span>
+        <span class="vcs">${D.repository.kind}</span>
+        <strong>${C(_)}</strong>
+        <span>${D.revisions.length} revisions</span>
+        <span title="${C(D.compiler)}">${C(D.compiler)}</span>
       </div>
     </header>
     <main>
       <section class="controls" aria-label="Comparison controls">
         <div class="mode-group" role="group" aria-label="Comparison mode">
-          ${q("single","B")}
-          ${q("side","A · B")}
-          ${q("blink","Blink")}
-          ${q("opacity","Mix")}
-          ${q("wipe","Wipe")}
-          ${q("heatmap","Heat")}
+          ${m("single","B")}
+          ${m("side","A · B")}
+          ${m("blink","Blink")}
+          ${m("opacity","Mix")}
+          ${m("wipe","Wipe")}
+          ${m("heatmap","Heat")}
         </div>
         <label class="mix-control" data-visible="false" hidden>
           <span id="mix-label">Wipe</span>
-          <input id="mix" type="range" min="0" max="100" value="${_}" aria-label="Comparison position" />
-          <input id="mix-number" type="number" min="0" max="100" value="${_}" aria-label="Comparison position percentage" />
+          <input id="mix" type="range" min="0" max="100" value="${S}" aria-label="Comparison position" />
+          <input id="mix-number" type="number" min="0" max="100" value="${S}" aria-label="Comparison position percentage" />
           <span aria-hidden="true">%</span>
         </label>
         <div class="page-controls">
@@ -64,97 +64,102 @@ function fe(e,t,n){if(e?.phase!=="ready"||t?.phase!=="ready")return"waiting";let
       </div>
       <div class="revision-scrubber">
         <label for="revision-slider">Travel through revisions</label>
-        <input id="revision-slider" type="range" min="0" max="0" value="0" />
+        <div class="revision-track">
+          <input id="revision-slider" type="range" min="0" max="0" value="0" />
+          <div class="readiness-rail" id="readiness-rail" aria-label="Revision render readiness"></div>
+        </div>
         <output id="revision-position"></output>
       </div>
       <div class="film" id="film" role="listbox" aria-label="Document revisions"></div>
       <div class="tree" id="tree" role="listbox" aria-label="Full revision tree" hidden></div>
     </footer>
-  `,je(),xe()}function je(){E.querySelectorAll("[data-mode]").forEach((t)=>{t.addEventListener("click",()=>{m=t.dataset.mode,x(),_e(),X()})}),d("#mix").addEventListener("input",(t)=>{ie(Number(t.target.value))}),d("#mix-number").addEventListener("input",(t)=>{ie(Number(t.target.value))}),d("#pin-a").addEventListener("click",()=>{window.clearTimeout(F),$=p,w=Math.min(w,(r.revisions[$].render?.pages.length??1)-1);let t=h;h=p,K=w,De(t,h),W(),z(!0)}),d("#collapse").addEventListener("change",(t)=>{ae=t.target.checked,oe(),V()}),E.querySelectorAll("[data-history-mode]").forEach((t)=>{t.addEventListener("click",()=>{b=t.dataset.historyMode;let n=le();if(!n.includes(r.revisions[p].key))p=k(n[0]),w=0;window.clearTimeout(F),$=p,xe(),z()})}),d("#revision-slider").addEventListener("input",(t)=>{let i=[...Z()].reverse()[Number(t.target.value)];if(i)Q(k(i),!0)}),d("#page-a").addEventListener("change",(t)=>{K=Number(t.target.value),x(),U()}),d("#page-b").addEventListener("change",(t)=>{w=Number(t.target.value),x(),U()});let e=d("#stage");e.addEventListener("pointerdown",(t)=>{if(m==="blink")A=!0,x();else if(m==="wipe"&&t.button===0)j=!0,e.setPointerCapture(t.pointerId),Le(t)}),e.addEventListener("pointermove",(t)=>{if(j)Le(t)}),e.addEventListener("pointerup",(t)=>{if(j)j=!1,e.releasePointerCapture(t.pointerId)}),window.addEventListener("pointerup",()=>{if(A)A=!1,x();j=!1}),window.addEventListener("keydown",(t)=>{if(t.key==="ArrowLeft")Ee(1);else if(t.key==="ArrowRight")Ee(-1);else if(t.code==="Space"&&m==="blink"&&!t.repeat)t.preventDefault(),A=!0,x()}),window.addEventListener("keyup",(t)=>{if(t.code==="Space"&&A)A=!1,x()})}function Ke(){let e=new EventSource(`${D}/api/events`);e.addEventListener("render",(t)=>{let n=JSON.parse(t.data),i=re.get(n.status.revision_key);if(!i)return;if(i.render=n.status,We(i),n.status.phase==="ready")ze()}),e.onerror=()=>{document.body.dataset.connection="lost"}}function xe(){Re(),Ce(),oe(),V(),U(),x(),X(),_e(),Fe()}function _e(){E.querySelectorAll("[data-mode]").forEach((n)=>{n.setAttribute("aria-pressed",String(n.dataset.mode===m))});let e=d(".mix-control"),t=m==="opacity"||m==="wipe";e.dataset.visible=String(t),e.hidden=!t,d("#mix-label").textContent=m==="opacity"?"Blend":"Wipe"}function Fe(){E.querySelectorAll("[data-history-mode]").forEach((t)=>{t.setAttribute("aria-pressed",String(t.dataset.historyMode===b))});let e=d("#collapse");e.disabled=b==="full-tree",d("#history-title").textContent=b==="first-parent"?"First-parent history":"Full revision tree",d("#history-description").textContent=b==="first-parent"?"The main story, oldest at left.":"Newest at top, with branches and merges at left."}function We(e){be(e);let t=J.get(e.key);if(t!=null&&t>0)be(R(r.history.first_parent_keys[t-1]));if(ae&&b==="first-parent"&&e.render?.phase==="ready")oe(),V();let n=r.revisions[$];if(k(e.key)===$||k(e.key)===h||n.parent_ids[0]===e.commit_id)W()}function be(e){E.querySelectorAll(`[data-revision-key="${e.key}"]`).forEach((t)=>{if(t.dataset.phase=e.render?.phase??"idle",t.classList.contains("frame")){let i=J.get(e.key),s=i==null?void 0:r.history.first_parent_keys[i+1],o=N(e.render,s?R(s).render:void 0),l=t.querySelector(".frame-meta");if(l)l.textContent=`${C(e.commit_id)} · ${o?"same output":B(e.render)}`}let n=t.querySelector(".tree-meta");if(n)n.textContent=`${C(e.commit_id)} · ${B(e.render)}`})}function W(){Re(),Ce(),U(),x(),X()}function De(e,t){Y(e,"pinned",!1),Y(t,"pinned",!0)}function Ge(e,t){Y(e,"selected",!1),Y(t,"selected",!0),E.querySelectorAll(`[data-index="${e}"]`).forEach((i)=>{i.setAttribute("aria-selected","false")}),E.querySelectorAll(`[data-index="${t}"]`).forEach((i)=>{i.setAttribute("aria-selected","true")});let n=E.querySelector(`[data-index="${t}"]`);if(n&&b==="full-tree"){let i=d("#tree");i.scrollTop=Math.max(0,n.offsetTop-i.clientHeight/2+n.clientHeight/2)}else if(n){let i=d("#film");i.scrollLeft=Math.max(0,n.offsetLeft-i.clientWidth/2+n.clientWidth/2)}}function Y(e,t,n){E.querySelectorAll(`[data-index="${e}"]`).forEach((i)=>{i.classList.toggle(t,n)})}function Re(){Me(d("#revision-a"),r.revisions[h],"A",h===$),Me(d("#revision-b"),r.revisions[$],"B",!1)}function Me(e,t,n,i){let s=qe.format(new Date(t.committed_at));e.innerHTML=`
-    <div class="revision-letter">${n}</div>
-    <p class="revision-date">${s}</p>
-    <h2>${M(t.subject||"(no description)")}</h2>
-    <p class="revision-author">${M(t.author)}</p>
+  `,l_(),K_()}function l_(){A.querySelectorAll("[data-mode]").forEach((h)=>{h.addEventListener("click",()=>{N=h.dataset.mode,P(),k_(),s()})}),O("#mix").addEventListener("input",(h)=>{z_(Number(h.target.value))}),O("#mix-number").addEventListener("input",(h)=>{z_(Number(h.target.value))}),O("#pin-a").addEventListener("click",()=>{j=Y,w=Math.min(w,(D.revisions[j].render?.pages.length??1)-1);let h=L;L=Y,g=w,o_(h,L),a(),u(!0)}),O("#collapse").addEventListener("change",(h)=>{Y_=h.target.checked,G_(),i()}),A.querySelectorAll("[data-history-mode]").forEach((h)=>{h.addEventListener("click",()=>{W=h.dataset.historyMode;let f=J_();if(!f.includes(D.revisions[Y].key))Y=K(f[0]),w=0;F_.cancel(),D_+=1,j=Y,K_(),u(!0)})}),O("#revision-slider").addEventListener("input",(h)=>{let F=[...__()].reverse()[Number(h.target.value)];if(F)F_.schedule(K(F))}),O("#revision-slider").addEventListener("change",(h)=>{F_.flush(),u(!0)}),O("#page-a").addEventListener("change",(h)=>{g=Number(h.target.value),P(),r()}),O("#page-b").addEventListener("change",(h)=>{w=Number(h.target.value),P(),r()});let _=O("#stage");_.addEventListener("pointerdown",(h)=>{if(N==="blink")p=!0,P();else if(N==="wipe"&&h.button===0)c=!0,_.setPointerCapture(h.pointerId),I_(h)}),_.addEventListener("pointermove",(h)=>{if(c)I_(h)}),_.addEventListener("pointerup",(h)=>{if(c)c=!1,_.releasePointerCapture(h.pointerId)}),window.addEventListener("pointerup",()=>{if(p)p=!1,P();c=!1}),window.addEventListener("keydown",(h)=>{if(h.target instanceof HTMLInputElement||h.target instanceof HTMLSelectElement)return;if(h.key==="ArrowLeft")q_(1);else if(h.key==="ArrowRight")q_(-1);else if(h.code==="Space"&&N==="blink"&&!h.repeat)h.preventDefault(),p=!0,P()}),window.addEventListener("keyup",(h)=>{if(h.code==="Space"&&p)p=!1,P()})}function t_(){let _=new EventSource(`${d}/api/events`);_.addEventListener("render",(h)=>{let f=JSON.parse(h.data),F=O_.get(f.status.revision_key);if(!F)return;if(F.render=f.status,n_(F),f.status.phase==="ready")y_()}),_.onerror=()=>{document.body.dataset.connection="lost"}}function K_(){p_(),b_(),G_(),i(),r(),P(),s(),k_(),r_()}function k_(){A.querySelectorAll("[data-mode]").forEach((f)=>{f.setAttribute("aria-pressed",String(f.dataset.mode===N))});let _=O(".mix-control"),h=N==="opacity"||N==="wipe";_.dataset.visible=String(h),_.hidden=!h,O("#mix-label").textContent=N==="opacity"?"Blend":"Wipe"}function r_(){A.querySelectorAll("[data-history-mode]").forEach((h)=>{h.setAttribute("aria-pressed",String(h.dataset.historyMode===W))});let _=O("#collapse");_.disabled=W==="full-tree",O("#history-title").textContent=W==="first-parent"?"First-parent history":"Full revision tree",O("#history-description").textContent=W==="first-parent"?"The main story, oldest at left.":"Newest at top, with branches and merges at left."}function n_(_){A_(_);let h=o.get(_.key);if(h!=null&&h>0)A_(M(D.history.first_parent_keys[h-1]));if(Y_&&W==="first-parent"&&_.render?.phase==="ready")G_(),i();let f=D.revisions[j],F=K(_.key),T=["ready","entrypoint_missing","error"].includes(_.render?.phase??"");if(F===Y&&T){m_(F);return}if((F===j||F===L||f.parent_ids[0]===_.commit_id)&&T)a()}function A_(_){A.querySelectorAll(`[data-revision-key="${_.key}"]`).forEach((h)=>{if(h.dataset.phase=_.render?.phase??"idle",h.classList.contains("frame")){let F=o.get(_.key),T=F==null?void 0:D.history.first_parent_keys[F+1],E=x(_.render,T?M(T).render:void 0),z=h.querySelector(".frame-meta");if(z)z.textContent=`${b(_.commit_id)} · ${E?"same output":q(_.render)}`}let f=h.querySelector(".tree-meta");if(f)f.textContent=`${b(_.commit_id)} · ${q(_.render)}`}),A.querySelectorAll(`[data-ready-key="${_.key}"]`).forEach((h)=>{h.dataset.phase=_.render?.phase??"idle",h.title=`${_.subject||"(no description)"} · ${q(_.render)}`})}function a(){p_(),b_(),r(),P(),s()}function o_(_,h){t(_,"pinned",!1),t(h,"pinned",!0)}function i_(_,h,f){if(t(_,"selected",!1),t(h,"selected",!0),A.querySelectorAll(`[data-index="${_}"]`).forEach((T)=>{T.setAttribute("aria-selected","false")}),A.querySelectorAll(`[data-index="${h}"]`).forEach((T)=>{T.setAttribute("aria-selected","true")}),!f)return;let F=A.querySelector(`[data-index="${h}"]`);if(F&&W==="full-tree"){let T=O("#tree");T.scrollTop=Math.max(0,F.offsetTop-T.clientHeight/2+F.clientHeight/2)}else if(F){let T=O("#film");T.scrollLeft=Math.max(0,F.offsetLeft-T.clientWidth/2+F.clientWidth/2)}}function t(_,h,f){A.querySelectorAll(`[data-index="${_}"]`).forEach((F)=>{F.classList.toggle(h,f)})}function p_(){U_(O("#revision-a"),D.revisions[L],"A",L===j),U_(O("#revision-b"),D.revisions[j],"B",!1)}function U_(_,h,f,F){let T=u_.format(new Date(h.committed_at));_.innerHTML=`
+    <div class="revision-letter">${f}</div>
+    <p class="revision-date">${T}</p>
+    <h2>${C(h.subject||"(no description)")}</h2>
+    <p class="revision-author">${C(h.author)}</p>
     <dl>
-      <div><dt>Commit</dt><dd title="${t.commit_id}">${C(t.commit_id)}</dd></div>
-      ${t.change_id?`<div><dt>Change</dt><dd title="${t.change_id}">${C(t.change_id)}</dd></div>`:""}
-      <div><dt>Render</dt><dd>${B(t.render)}</dd></div>
+      <div><dt>Commit</dt><dd title="${h.commit_id}">${b(h.commit_id)}</dd></div>
+      ${h.change_id?`<div><dt>Change</dt><dd title="${h.change_id}">${b(h.change_id)}</dd></div>`:""}
+      <div><dt>Render</dt><dd>${q(h.render)}</dd></div>
     </dl>
-    ${t.bookmarks.map((o)=>`<span class="bookmark">${M(o)}</span>`).join("")}
-    ${i?'<p class="same-pin">A and B are this revision.</p>':""}
-  `}function oe(){let e=d("#film"),t=d("#tree");if(e.hidden=b!=="first-parent",t.hidden=b!=="full-tree",b==="full-tree"){Oe(t);return}let n=e.scrollLeft,i=r.revisions[p].key,s=e.dataset.selectedKey!==i,l=Z().map((u)=>({revision:R(u),index:k(u)})).reverse();e.innerHTML=l.map(({revision:u,index:a})=>{let T=u.render?.phase??"idle",L=J.get(u.key)??-1,y=r.history.first_parent_keys[L+1],g=y?R(y):void 0,I=N(u.render,g?.render);return`
+    ${h.bookmarks.map((E)=>`<span class="bookmark">${C(E)}</span>`).join("")}
+    ${F?'<p class="same-pin">A and B are this revision.</p>':""}
+  `}function G_(){let _=O("#film"),h=O("#tree");if(_.hidden=W!=="first-parent",h.hidden=W!=="full-tree",W==="full-tree"){s_(h);return}let f=_.scrollLeft,F=D.revisions[Y].key,T=_.dataset.selectedKey!==F,z=__().map((J)=>({revision:M(J),index:K(J)})).reverse();_.innerHTML=z.map(({revision:J,index:$})=>{let R=J.render?.phase??"idle",U=o.get(J.key)??-1,X=D.history.first_parent_keys[U+1],Z=X?M(X):void 0,B=x(J.render,Z?.render);return`
         <button
-          class="frame ${a===p?"selected":""} ${a===h?"pinned":""}"
+          class="frame ${$===Y?"selected":""} ${$===L?"pinned":""}"
           type="button"
           role="option"
-          aria-selected="${a===p}"
-          data-index="${a}"
-          data-revision-key="${u.key}"
-          data-phase="${T}"
-          title="${M(u.changed_paths.join(`
+          aria-selected="${$===Y}"
+          data-index="${$}"
+          data-revision-key="${J.key}"
+          data-phase="${R}"
+          title="${C(J.changed_paths.join(`
 `))}"
         >
           <span class="sprockets" aria-hidden="true"></span>
-          <time>${de(u.committed_at)}</time>
-          <strong>${M(u.subject||"(no description)")}</strong>
-          <span class="frame-meta">${C(u.commit_id)} · ${I?"same output":B(u.render)}</span>
+          <time>${N_(J.committed_at)}</time>
+          <strong>${C(J.subject||"(no description)")}</strong>
+          <span class="frame-meta">${b(J.commit_id)} · ${B?"same output":q(J.render)}</span>
           <span class="frame-state" aria-hidden="true"></span>
         </button>
-      `}).join(""),e.querySelectorAll(".frame").forEach((u)=>{u.addEventListener("click",()=>Q(Number(u.dataset.index)))});let f=e.querySelector(".selected");if(e.dataset.selectedKey=i,f&&s)e.scrollLeft=Math.max(0,f.offsetLeft-e.clientWidth/2+f.clientWidth/2);else e.scrollLeft=n}function Oe(e){let t=r.history.full_tree_keys,n=ye(r.revisions,t),i=new Map(n.nodes.map((c)=>[c.key,c])),s=e.scrollTop,o=r.revisions[p].key,l=e.dataset.selectedKey!==o,f=58,u=8,a=Math.min(8,n.laneCount),T=34+a*18,L=(c)=>n.laneCount<2?18:16+c/(n.laneCount-1)*(T-32),y=t.length*58+16,g=new Map(n.nodes.map((c)=>[c.key,c.row])),I=n.edges.map((c)=>{let v=i.get(c.child),H=i.get(c.parent);if(!v||!H)return"";let P=g.get(c.child),ce=g.get(c.parent);if(P==null||ce==null)return"";let pe=L(v.lane),ue=8+P*58+29,me=L(H.lane),ge=8+ce*58+29,he=(ue+ge)/2;return`<path class="${c.merge?"merge-edge":""}" d="M ${pe} ${ue} C ${pe} ${he}, ${me} ${he}, ${me} ${ge}" />`}).join(""),Be=n.nodes.map((c)=>{let v=g.get(c.key);if(v==null)return"";let H=k(c.key);return`<circle class="${[H===p?"selected":"",H===h?"pinned":""].filter(Boolean).join(" ")}" cx="${L(c.lane)}" cy="${8+v*58+29}" r="5" />`}).join(""),Ae=n.nodes.map((c)=>{let v=R(c.key),H=k(c.key),P=v.render?.phase??"idle";return`
+      `}).join(""),_.querySelectorAll(".frame").forEach((J)=>{J.addEventListener("click",()=>e(Number(J.dataset.index)))});let Q=_.querySelector(".selected");if(_.dataset.selectedKey=F,Q&&T)_.scrollLeft=Math.max(0,Q.offsetLeft-_.clientWidth/2+Q.clientWidth/2);else _.scrollLeft=f}function s_(_){let h=D.history.full_tree_keys,f=w_(D.revisions,h),F=new Map(f.nodes.map((G)=>[G.key,G])),T=_.scrollTop,E=D.revisions[Y].key,z=_.dataset.selectedKey!==E,Q=58,J=8,$=Math.min(8,f.laneCount),R=34+$*18,U=(G)=>f.laneCount<2?18:16+G/(f.laneCount-1)*(R-32),X=h.length*58+16,Z=new Map(f.nodes.map((G)=>[G.key,G.row])),B=f.edges.map((G)=>{let V=F.get(G.child),I=F.get(G.parent);if(!V||!I)return"";let y=Z.get(G.child),Q_=Z.get(G.parent);if(y==null||Q_==null)return"";let Z_=U(V.lane),j_=8+y*58+29,L_=U(I.lane),X_=8+Q_*58+29,V_=(j_+X_)/2;return`<path class="${G.merge?"merge-edge":""}" d="M ${Z_} ${j_} C ${Z_} ${V_}, ${L_} ${V_}, ${L_} ${X_}" />`}).join(""),x_=f.nodes.map((G)=>{let V=Z.get(G.key);if(V==null)return"";let I=K(G.key);return`<circle class="${[I===Y?"selected":"",I===L?"pinned":""].filter(Boolean).join(" ")}" cx="${U(G.lane)}" cy="${8+V*58+29}" r="5" />`}).join(""),c_=f.nodes.map((G)=>{let V=M(G.key),I=K(G.key),y=V.render?.phase??"idle";return`
         <button
-          class="tree-node ${H===p?"selected":""} ${H===h?"pinned":""}"
+          class="tree-node ${I===Y?"selected":""} ${I===L?"pinned":""}"
           type="button"
           role="option"
-          aria-selected="${H===p}"
-          data-index="${H}"
-          data-revision-key="${v.key}"
-          data-phase="${P}"
-          title="${M(v.changed_paths.join(`
+          aria-selected="${I===Y}"
+          data-index="${I}"
+          data-revision-key="${V.key}"
+          data-phase="${y}"
+          title="${C(V.changed_paths.join(`
 `))}"
         >
           <span class="tree-subject">
-            <strong>${M(v.subject||"(no description)")}</strong>
-            <time>${de(v.committed_at)}</time>
+            <strong>${C(V.subject||"(no description)")}</strong>
+            <time>${N_(V.committed_at)}</time>
           </span>
-          <span class="tree-meta">${C(v.commit_id)} · ${B(v.render)}</span>
+          <span class="tree-meta">${b(V.commit_id)} · ${q(V.render)}</span>
         </button>
-      `}).join("");e.innerHTML=`
-    <div class="tree-canvas" data-lanes="${a}">
-      <svg aria-hidden="true" viewBox="0 0 ${T} ${y}" width="${T}" height="${y}">${I}${Be}</svg>
-      ${Ae}
+      `}).join("");_.innerHTML=`
+    <div class="tree-canvas" data-lanes="${$}">
+      <svg aria-hidden="true" viewBox="0 0 ${R} ${X}" width="${R}" height="${X}">${B}${x_}</svg>
+      ${c_}
     </div>
-  `,e.querySelectorAll(".tree-node").forEach((c)=>{c.addEventListener("click",()=>Q(Number(c.dataset.index)))});let ee=e.querySelector(".tree-node.selected");if(e.dataset.selectedKey=o,ee&&l)e.scrollTop=Math.max(0,ee.offsetTop-e.clientHeight/2+ee.clientHeight/2);else e.scrollTop=s}function V(){let e=[...Z()].reverse(),t=d("#revision-slider"),n=r.revisions[p].key,i=Math.max(0,e.indexOf(n));t.max=String(Math.max(0,e.length-1)),t.value=String(i);let s=e[i]?R(e[i]):void 0;d("#revision-position").textContent=s?`${i+1} / ${e.length} · ${de(s.committed_at)} · ${s.subject||"(no description)"}`:"No revision"}function Ce(){$e(d("#page-a"),r.revisions[h].render,K),$e(d("#page-b"),r.revisions[$].render,w)}function $e(e,t,n){let i=t?.phase==="ready"?t.pages.length:0;if(i===0){e.innerHTML='<option value="0">—</option>',e.disabled=!0;return}e.disabled=!1,e.innerHTML=Array.from({length:i},(s,o)=>`<option value="${o}" ${o===n?"selected":""}>${o+1}</option>`).join("")}function U(){let e=r.revisions[h].render,t=r.revisions[$].render,n=Math.max(e?.pages.length??0,t?.pages.length??0),i=d("#page-rail");i.innerHTML=Array.from({length:n},(s,o)=>{let l=fe(e,t,o);return`<button class="page-tick ${l} ${o===w?"active":""}" data-page="${o}" title="Page ${o+1}: ${l}">${o+1}</button>`}).join(""),i.querySelectorAll(".page-tick").forEach((s)=>{s.addEventListener("click",()=>{K=Math.min(Number(s.dataset.page),Math.max(0,(e?.pages.length??1)-1)),w=Math.min(Number(s.dataset.page),Math.max(0,(t?.pages.length??1)-1)),W()})})}function x(){let e=d("#stage"),t=r.revisions[h],n=r.revisions[$],i=Te(t.render,K),s=Te(n.render,w);if(m==="single"){let o=Je(n);e.innerHTML=`
+  `,_.querySelectorAll(".tree-node").forEach((G)=>{G.addEventListener("click",()=>e(Number(G.dataset.index)))});let h_=_.querySelector(".tree-node.selected");if(_.dataset.selectedKey=E,h_&&z)_.scrollTop=Math.max(0,h_.offsetTop-_.clientHeight/2+h_.clientHeight/2);else _.scrollTop=T}function i(_=!0){let h=[...__()].reverse(),f=O("#revision-slider"),F=D.revisions[Y].key,T=Math.max(0,h.indexOf(F));if(f.max=String(Math.max(0,h.length-1)),_)f.value=String(T);let E=h[T]?M(h[T]):void 0;O("#revision-position").textContent=E?`${T+1} / ${h.length} · ${N_(E.committed_at)} · ${E.subject||"(no description)"}`:"No revision",e_(h)}function e_(_){let h=O("#readiness-rail"),f=_.join("\x00");if(h.dataset.keys!==f)h.dataset.keys=f,h.innerHTML=_.map((T)=>{let E=M(T);return`<span
+          data-ready-key="${E.key}"
+          data-phase="${E.render?.phase??"idle"}"
+          title="${C(`${E.subject||"(no description)"} · ${q(E.render)}`)}"
+        ></span>`}).join("");let F=D.revisions[Y].key;h.querySelectorAll("[data-ready-key]").forEach((T)=>{let E=T.dataset.readyKey,z=E?M(E):void 0;T.dataset.phase=z?.render?.phase??"idle",T.classList.toggle("selected",E===F)})}function b_(){M_(O("#page-a"),D.revisions[L].render,g),M_(O("#page-b"),D.revisions[j].render,w)}function M_(_,h,f){let F=h?.phase==="ready"?h.pages.length:0;if(F===0){_.innerHTML='<option value="0">—</option>',_.disabled=!0;return}_.disabled=!1,_.innerHTML=Array.from({length:F},(T,E)=>`<option value="${E}" ${E===f?"selected":""}>${E+1}</option>`).join("")}function r(){let _=D.revisions[L].render,h=D.revisions[j].render,f=Math.max(_?.pages.length??0,h?.pages.length??0),F=O("#page-rail");F.innerHTML=Array.from({length:f},(T,E)=>{let z=W_(_,h,E);return`<button class="page-tick ${z} ${E===w?"active":""}" data-page="${E}" title="Page ${E+1}: ${z}">${E+1}</button>`}).join(""),F.querySelectorAll(".page-tick").forEach((T)=>{T.addEventListener("click",()=>{g=Math.min(Number(T.dataset.page),Math.max(0,(_?.pages.length??1)-1)),w=Math.min(Number(T.dataset.page),Math.max(0,(h?.pages.length??1)-1)),a()})})}function P(){let _=O("#stage"),h=D.revisions[L],f=D.revisions[j],F=n(h.render,g),T=n(f.render,w);if(_h(_),N==="heatmap"){let z=`${F??"missing"}\x00${T??"missing"}`;if(F&&T&&_.dataset.comparison!==z){_.dataset.comparison=z;let Q=O("#heatmap-label");Q.textContent="Calculating visual difference…",hh(F,T)}return}R_(_.querySelector('[data-page-slot="a"]'),h,F,"A"),R_(_.querySelector('[data-page-slot="b"]'),f,T,"B"),_.querySelector(".stack-pages")?.classList.toggle("show-a",p),_.querySelector(".stack-pages")?.classList.toggle("show-b",!p);let E=_.querySelector(".same-output");if(E)E.hidden=!fh(f)}function _h(_){if(_.dataset.mode===N)return;if(_.dataset.mode=N,_.dataset.comparison="",N==="single")_.innerHTML=`
       <div class="single-page">
-        ${te(n,s,"B")}
-        ${o?'<span class="same-output">Same rendered output as first parent</span>':""}
+        ${H("b")}
+        <span class="same-output" hidden>Same rendered output as first parent</span>
       </div>
-    `;return}if(!i||!s){e.innerHTML=`
-      <div class="split-pages">
-        ${te(t,i,"A")}
-        ${te(n,s,"B")}
-      </div>
-    `;return}if(m==="side")e.innerHTML=`<div class="split-pages">${S(i,"Revision A")}${S(s,"Revision B")}</div>`;else if(m==="blink")e.innerHTML=`
-      <div class="stack-pages ${A?"show-a":"show-b"}">
-        ${S(i,"Revision A")}
-        ${S(s,"Revision B")}
+    `;else if(N==="side")_.innerHTML=`<div class="split-pages">${H("a")}${H("b")}</div>`;else if(N==="blink")_.innerHTML=`
+      <div class="stack-pages show-b">
+        ${H("a")}
+        ${H("b")}
         <span class="blink-instruction">Hold space or press document for A</span>
       </div>
-    `;else if(m==="opacity")e.innerHTML=`
+    `;else if(N==="opacity")_.innerHTML=`
       <div class="stack-pages">
-        ${S(i,"Revision A")}
-        <div class="overlay-page mix-page">${S(s,"Revision B")}</div>
+        ${H("a")}
+        <div class="overlay-page mix-page">${H("b")}</div>
       </div>
-    `;else if(m==="wipe")e.innerHTML=`
+    `;else if(N==="wipe")_.innerHTML=`
       <div class="stack-pages wipe-pages">
-        ${S(i,"Revision A")}
-        <div class="overlay-page wipe">${S(s,"Revision B")}</div>
+        ${H("a")}
+        <div class="overlay-page wipe">${H("b")}</div>
         <span class="wipe-line" aria-hidden="true"></span>
         <span class="wipe-handle" aria-hidden="true">A&nbsp;│&nbsp;B</span>
       </div>
-    `;else e.innerHTML='<div class="heatmap"><canvas id="heatmap"></canvas><p id="heatmap-label">Calculating visual difference…</p></div>',Ye(i,s)}function ie(e){if(!Number.isFinite(e))return;_=Math.min(100,Math.max(0,Math.round(e))),X()}function X(){let e=document.querySelector("#mix"),t=document.querySelector("#mix-number");if(e)e.value=String(_);if(t)t.value=String(_);O(document.querySelector(".mix-page"),{opacity:_/100}),O(document.querySelector(".wipe"),{clipPath:`inset(0 ${100-_}% 0 0)`}),O(document.querySelector(".wipe-line"),{left:`${_}%`}),O(document.querySelector(".wipe-handle"),{left:`${_}%`})}function O(e,t){if(!e)return;e.getAnimations().forEach((n)=>n.cancel()),e.animate([t,t],{duration:1,fill:"forwards"})}function Le(e){let t=document.querySelector(".wipe-pages");if(!t)return;let n=t.getBoundingClientRect();ie((e.clientX-n.left)/n.width*100)}async function Ye(e,t){let n=++G,i,s;try{[i,s]=await Promise.all([He(e),He(t)])}catch(o){if(n===G&&m==="heatmap"){let l=document.querySelector("#heatmap-label");if(l)l.textContent=`Could not calculate heatmap: ${String(o)}`}return}if(n!==G||m!=="heatmap"){i.close(),s.close();return}ne.onmessage=(o)=>{let l=o.data;if(l.generation!==G||m!=="heatmap"){l.bitmap.close();return}let f=document.querySelector("#heatmap");if(!f){l.bitmap.close();return}f.width=l.width,f.height=l.height;let u=f.getContext("bitmaprenderer");if(u)u.transferFromImageBitmap(l.bitmap);else f.getContext("2d").drawImage(l.bitmap,0,0),l.bitmap.close();let a=document.querySelector("#heatmap-label");if(a)a.textContent=`${(l.changed/l.total*100).toFixed(2)}% pixels differ`},ne.postMessage({left:i,right:s,scale:1.5,generation:n},[i,s])}function Q(e,t=!1){if(e<0||e>=r.revisions.length)return;let n=p;if(p=e,Ge(n,p),V(),z(),t)window.clearTimeout(F),F=window.setTimeout(()=>{if(p===e)we(e,!0)},90);else we(e,!1)}function we(e,t){window.clearTimeout(F),$=e;let n=r.revisions[e].render?.pages.length??1;if(w=Math.min(w,n-1),t)Ue(W);else W()}function Ue(e){let t=d("#revision-slider"),n=t.getBoundingClientRect().top,i=()=>{let s=t.getBoundingClientRect().top-n;if(Math.abs(s)>0.5)window.scrollBy(0,s)};e(),i(),d("#stage").querySelectorAll("img").forEach((s)=>{if(!s.complete)s.addEventListener("load",i,{once:!0})})}function Ee(e){let t=Z(),n=t.indexOf(r.revisions[p].key);if(n<0)return;let i=Math.min(t.length-1,Math.max(0,n+e));Q(k(t[i]))}function z(e=!1){window.clearTimeout(ve);let t=()=>{se(r.revisions[p]),se(r.revisions[h])};if(e)t();else ve=window.setTimeout(t,120)}function ze(){let e=le(),t=e.indexOf(r.revisions[p].key);for(let n of[t-1,t+1])if(n>=0&&n<e.length)se(R(e[n]))}async function se(e){if(!e||["queued","materializing","compiling","ready"].includes(e.render?.phase??""))return;await fetch(`${D}/api/render`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({revision_key:e.key})})}function Te(e,t){if(e?.phase!=="ready"||!e.render_id||!e.pages[t])return null;return`${D}/assets/${e.render_id}/page/${e.pages[t].number}`}function te(e,t,n){if(t)return S(t,`Revision ${n}`);let i=e.render?.phase,s=e.render?.message;return`
-    <div class="render-status ${i??"idle"}">
-      <span class="status-letter">${n}</span>
-      <strong>${B(e.render)}</strong>
-      <p>${M(s??(i?"Preparing this revision…":"Select this revision to render it."))}</p>
+    `;else _.innerHTML='<div class="heatmap"><canvas id="heatmap"></canvas><p id="heatmap-label">Waiting for both revisions…</p></div>'}function H(_){let h=_.toUpperCase();return`
+    <div class="page-slot" data-page-slot="${_}">
+      <img class="document-page" alt="Revision ${h}" draggable="false" decoding="async" hidden />
+      <div class="render-status idle">
+        <span class="status-letter">${h}</span>
+        <strong>Not rendered</strong>
+        <p>Select this revision to render it.</p>
+      </div>
     </div>
-  `}function S(e,t){return`<img class="document-page" src="${e}" alt="${t}" draggable="false" decoding="async" />`}function Je(e){let t=Se.get(e.parent_ids[0]);return Boolean(t&&N(e.render,t.render))}function q(e,t){return`<button type="button" data-mode="${e}" aria-pressed="${e===m}">${t}</button>`}function le(){return b==="first-parent"?r.history.first_parent_keys:r.history.full_tree_keys}function Z(){let e=le();if(b==="full-tree"||!ae)return e;return e.filter((t,n)=>{if(n===e.length-1)return!0;return!N(R(t).render,R(e[n+1]).render)})}function R(e){let t=re.get(e);if(!t)throw Error(`Unknown revision: ${e}`);return t}function k(e){return ke.get(e)??-1}function de(e){return Ie.format(new Date(e))}async function He(e){let t=await new Promise((n,i)=>{let s=new Image;s.decoding="async",s.onload=()=>n(s),s.onerror=()=>i(Error(`Could not load ${e}`)),s.src=e});return createImageBitmap(t)}function d(e){let t=document.querySelector(e);if(!t)throw Error(`Missing UI element: ${e}`);return t}function M(e){return e.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}
+  `}function R_(_,h,f,F){if(!_)return;let T=_.querySelector("img"),E=_.querySelector(".render-status");if(!T||!E)return;if(f){if(T.getAttribute("src")!==f)T.src=f;T.hidden=!1,E.hidden=!0;return}T.hidden=!0,E.hidden=!1,E.className=`render-status ${h.render?.phase??"idle"}`;let z=E.querySelector("strong"),Q=E.querySelector("p");if(z)z.textContent=q(h.render);if(Q)Q.textContent=h.render?.message??(h.render?.phase?"Preparing this revision…":`Select revision ${F} to render it.`)}function z_(_){if(!Number.isFinite(_))return;S=Math.min(100,Math.max(0,Math.round(_))),s()}function s(){let _=document.querySelector("#mix"),h=document.querySelector("#mix-number");if(_)_.value=String(S);if(h)h.value=String(S);l(document.querySelector(".mix-page"),{opacity:S/100}),l(document.querySelector(".wipe"),{clipPath:`inset(0 ${100-S}% 0 0)`}),l(document.querySelector(".wipe-line"),{left:`${S}%`}),l(document.querySelector(".wipe-handle"),{left:`${S}%`})}function l(_,h){if(!_)return;_.getAnimations().forEach((f)=>f.cancel()),_.animate([h,h],{duration:1,fill:"forwards"})}function I_(_){let h=document.querySelector(".wipe-pages");if(!h)return;let f=h.getBoundingClientRect();z_((_.clientX-f.left)/f.width*100)}async function hh(_,h){let f=++v,F,T;try{[F,T]=await Promise.all([H_(_),H_(h)])}catch(E){if(f===v&&N==="heatmap"){let z=document.querySelector("#heatmap-label");if(z)z.textContent=`Could not calculate heatmap: ${String(E)}`}return}if(f!==v||N!=="heatmap"){F.close(),T.close();return}E_.onmessage=(E)=>{let z=E.data;if(z.generation!==v||N!=="heatmap"){z.bitmap.close();return}let Q=document.querySelector("#heatmap");if(!Q){z.bitmap.close();return}Q.width=z.width,Q.height=z.height;let J=Q.getContext("bitmaprenderer");if(J)J.transferFromImageBitmap(z.bitmap);else Q.getContext("2d").drawImage(z.bitmap,0,0),z.bitmap.close();let $=document.querySelector("#heatmap-label");if($)$.textContent=`${(z.changed/z.total*100).toFixed(2)}% pixels differ`},E_.postMessage({left:F,right:T,scale:1.5,generation:f},[F,T])}function e(_,h=!0){if(_<0||_>=D.revisions.length)return;let f=Y;Y=_,i_(f,Y,h),i(h),$_(),u(),m_(_)}async function m_(_){let h=D.revisions[_];if(!["ready","entrypoint_missing","error"].includes(h.render?.phase??""))return;if(_===j){a(),$_();return}let F=++D_,T=h.render?.pages.length??1,E=Math.min(w,T-1),z=n(h.render,E);if(z)try{await B_(z)}catch{}if(F!==D_||Y!==_)return;j=_,w=E,a(),$_(),y_()}function B_(_){let h=k.get(_);if(h)return k.delete(_),k.set(_,h),h;let f=new Image;f.decoding="async";let F=new Promise((T,E)=>{f.addEventListener("load",()=>{f.decode().then(T,T)}),f.addEventListener("error",()=>E(Error(`Could not preload ${_}`))),f.src=_}).catch((T)=>{throw k.delete(_),T});k.set(_,F);while(k.size>12){let T=k.keys().next().value;if(T===void 0)break;k.delete(T)}return F}function y_(){let _=J_(),h=_.indexOf(D.revisions[Y].key);for(let f of[-2,-1,1,2]){let F=_[h+f];if(!F)continue;let T=n(M(F).render,w);if(T)B_(T).catch(()=>{return})}}function $_(){let _=O("#stage"),h=Y!==j;_.dataset.previewPending=String(h),_.setAttribute("aria-busy",String(h))}function q_(_){let h=__(),f=h.indexOf(D.revisions[Y].key);if(f<0)return;let F=Math.min(h.length-1,Math.max(0,f+_));e(K(h[F]))}function u(_=!1){let h={revisionKey:D.revisions[Y].key,pinnedRevisionKey:D.revisions[L].key,historyMode:W,generation:++a_};if(C_.schedule(h),_)C_.flush()}function n(_,h){if(_?.phase!=="ready"||!_.render_id||!_.pages[h])return null;return`${d}/assets/${_.render_id}/page/${_.pages[h].number}`}function fh(_){let h=S_.get(_.parent_ids[0]);return Boolean(h&&x(_.render,h.render))}function m(_,h){return`<button type="button" data-mode="${_}" aria-pressed="${_===N}">${h}</button>`}function J_(){return W==="first-parent"?D.history.first_parent_keys:D.history.full_tree_keys}function __(){let _=J_();if(W==="full-tree"||!Y_)return _;return _.filter((h,f)=>{if(f===_.length-1)return!0;return!x(M(h).render,M(_[f+1]).render)})}function M(_){let h=O_.get(_);if(!h)throw Error(`Unknown revision: ${_}`);return h}function K(_){return P_.get(_)??-1}function N_(_){return g_.format(new Date(_))}async function H_(_){let h=await new Promise((f,F)=>{let T=new Image;T.decoding="async",T.onload=()=>f(T),T.onerror=()=>F(Error(`Could not load ${_}`)),T.src=_});return createImageBitmap(h)}function O(_){let h=document.querySelector(_);if(!h)throw Error(`Missing UI element: ${_}`);return h}function C(_){return _.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;")}

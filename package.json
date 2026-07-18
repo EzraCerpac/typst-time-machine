@@ -5,7 +5,7 @@
   "scripts": {
     "build": "bun build web/src/app.ts --outfile web/dist/app.js --target browser --minify && bun build web/src/diff-worker.ts --outfile web/dist/diff-worker.js --target browser --minify",
     "typecheck": "tsc --noEmit",
-    "test": "bun test ./tests/web/model.test.ts"
+    "test": "bun test ./tests/web"
   },
   "dependencies": {
     "pixelmatch": "7.1.0"

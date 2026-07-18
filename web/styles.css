@@ -315,7 +315,8 @@ select,
 
 .stage {
   position: relative;
-  min-height: 48vh;
+  height: clamp(420px, 76vh, 900px);
+  min-height: 0;
   display: grid;
   place-items: start center;
   padding: clamp(12px, 2vw, 24px);
@@ -330,6 +331,19 @@ select,
   box-shadow: inset 0 0 0 7px rgb(255 255 255 / 46%);
 }
 
+.stage[data-preview-pending="true"]::after {
+  content: "Rendering selected revision…";
+  position: absolute;
+  z-index: 8;
+  top: 12px;
+  right: 12px;
+  padding: 6px 8px;
+  color: white;
+  background: rgb(29 39 41 / 88%);
+  font: 9px/1.2 "SFMono-Regular", Consolas, monospace;
+  pointer-events: none;
+}
+
 .document-page {
   display: block;
   max-width: 100%;
@@ -339,6 +353,18 @@ select,
   background: white;
   box-shadow: var(--shadow);
   user-select: none;
+}
+
+.document-page[hidden],
+.render-status[hidden] {
+  display: none;
+}
+
+.page-slot {
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  place-items: start center;
 }
 
 .single-page {
@@ -378,7 +404,7 @@ select,
   max-width: 100%;
 }
 
-.stack-pages > .document-page,
+.stack-pages > .page-slot,
 .stack-pages > .overlay-page {
   grid-area: 1 / 1;
 }
@@ -393,19 +419,19 @@ select,
   box-shadow: none;
 }
 
-.stack-pages.show-a > .document-page:first-child {
+.stack-pages.show-a > .page-slot:first-child {
   visibility: visible;
 }
 
-.stack-pages.show-a > .document-page:nth-child(2) {
+.stack-pages.show-a > .page-slot:nth-child(2) {
   visibility: hidden;
 }
 
-.stack-pages.show-b > .document-page:first-child {
+.stack-pages.show-b > .page-slot:first-child {
   visibility: hidden;
 }
 
-.stack-pages.show-b > .document-page:nth-child(2) {
+.stack-pages.show-b > .page-slot:nth-child(2) {
   visibility: visible;
 }
 
@@ -542,6 +568,7 @@ select,
 }
 
 .history-dock {
+  overflow-anchor: none;
   padding: 18px clamp(20px, 4vw, 58px) 26px;
   border-top: 1px solid var(--line);
   background: #dfe5e3;
@@ -609,9 +636,9 @@ select,
 }
 
 .revision-scrubber {
-  overflow-anchor: auto;
+  overflow-anchor: none;
   display: grid;
-  grid-template-columns: max-content minmax(180px, 1fr) minmax(220px, auto);
+  grid-template-columns: max-content minmax(180px, 1fr) clamp(220px, 32vw, 34rem);
   align-items: center;
   gap: 14px;
   margin-bottom: 5px;
@@ -626,8 +653,50 @@ select,
   text-transform: uppercase;
 }
 
+.revision-track,
 .revision-scrubber input {
   width: 100%;
+}
+
+.revision-track {
+  display: grid;
+  gap: 3px;
+}
+
+.readiness-rail {
+  height: 4px;
+  display: flex;
+  gap: 1px;
+  overflow: hidden;
+  background: #cfd7d5;
+}
+
+.readiness-rail span {
+  min-width: 2px;
+  flex: 1;
+  background: #b4bfbd;
+}
+
+.readiness-rail span[data-phase="queued"] {
+  background: #92b7bd;
+}
+
+.readiness-rail span[data-phase="materializing"],
+.readiness-rail span[data-phase="compiling"] {
+  background: var(--amber);
+}
+
+.readiness-rail span[data-phase="ready"] {
+  background: var(--cyan);
+}
+
+.readiness-rail span[data-phase="entrypoint_missing"],
+.readiness-rail span[data-phase="error"] {
+  background: var(--danger);
+}
+
+.readiness-rail span.selected {
+  box-shadow: inset 0 0 0 1px white, 0 0 0 1px var(--graphite);
 }
 
 .revision-scrubber output {
@@ -966,7 +1035,7 @@ select,
 
   .stage {
     padding: 10px;
-    min-height: 55vh;
+    height: max(360px, 62vh);
   }
 
   .split-pages {

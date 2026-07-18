@@ -1,4 +1,5 @@
 mod config;
+mod engine;
 mod history;
 mod render;
 mod server;
@@ -34,6 +35,8 @@ enum Command {
         #[command(subcommand)]
         command: CacheCommand,
     },
+    #[command(name = "__engine-worker", hide = true)]
+    EngineWorker,
 }
 
 #[derive(Debug, Args)]
@@ -81,9 +84,9 @@ struct ViewArgs {
     #[arg(long)]
     package_cache_path: Option<PathBuf>,
 
-    /// Typst compiler executable
-    #[arg(long, default_value = "typst")]
-    typst: PathBuf,
+    /// Use an external Typst compiler instead of the bundled incremental engine
+    #[arg(long)]
+    typst: Option<PathBuf>,
 
     /// Print viewer URL without opening a browser
     #[arg(long)]
@@ -104,6 +107,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::View(args) => view(*args).await,
         Command::Cache { command } => cache(command),
+        Command::EngineWorker => engine::run_worker(),
     }
 }
 
@@ -144,7 +148,13 @@ async fn view(args: ViewArgs) -> Result<()> {
         bail!("no matching first-parent revisions found");
     }
 
-    let render = RenderManager::new(Arc::clone(&repository), target, &history.revisions)?;
+    let render = RenderManager::new(
+        Arc::clone(&repository),
+        target,
+        &history.revisions,
+        &history.first_parent_keys,
+        &history.full_tree_keys,
+    )?;
     render.queue(&history.first_parent_keys[0]).await?;
     if let Some(parent) = history.first_parent_keys.get(1) {
         render.queue(parent).await?;
