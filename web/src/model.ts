@@ -66,7 +66,7 @@ export type HistoryMode = "first-parent" | "full-tree";
 
 export interface GraphNode {
   key: string;
-  column: number;
+  row: number;
   lane: number;
 }
 
@@ -148,7 +148,7 @@ export function layoutRevisionGraph(revisions: Revision[], newestFirstKeys: stri
     } else {
       active.splice(lane, 1);
     }
-    nodes.push({ key, column: newestFirstKeys.length - order - 1, lane });
+    nodes.push({ key, row: order, lane });
 
     revision.parent_ids
       .filter((parent) => visibleCommits.has(parent))

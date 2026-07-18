@@ -66,11 +66,12 @@ one operation and starts at `@-`, excluding the working-copy commit and
 unsnapshotted filesystem state.
 
 The viewer initially renders the latest revision and its parent. Other revisions
-render lazily when approached. The revision scrubber travels through the loaded
-history. The history dock can switch between the first-parent story and the full
-reachable revision tree. Arrow keys scrub the active view. Space temporarily
-shows revision A in Blink mode, and Wipe mode can be dragged directly on the
-document.
+render only when selected or immediately neighboring the selection, so a cold
+click is not buried behind bulk background work. The revision scrubber travels
+through the loaded history. The history dock switches between the horizontal
+first-parent story and a vertically scrollable reachable revision tree. Arrow
+keys scrub the active view. Space temporarily shows revision A in Blink mode,
+and Wipe mode can be dragged directly on the document.
 
 Inspect or clear cached render artifacts:
 

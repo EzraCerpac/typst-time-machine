@@ -67,6 +67,7 @@ describe("visual comparison model", () => {
 
     expect(graph.laneCount).toBe(2);
     expect(graph.edges).toHaveLength(4);
+    expect(graph.nodes.map((node) => node.row)).toEqual([0, 1, 2, 3]);
     expect(graph.edges.find((edge) => edge.child === "git:merge" && edge.parent === "git:branch")?.merge).toBe(
       true,
     );

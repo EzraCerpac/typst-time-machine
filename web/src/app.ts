@@ -27,8 +27,8 @@ let mix = 50;
 let collapseUnchanged = false;
 let blinkHeld = false;
 let heatmapGeneration = 0;
-let backgroundTimer: number | undefined;
 let draggingWipe = false;
+let selectionTimer: number | undefined;
 
 void boot();
 
@@ -41,8 +41,7 @@ async function boot() {
   pinnedA = revisionIndex(session.history.first_parent_keys[1] ?? session.history.first_parent_keys[0]);
   renderShell();
   connectEvents();
-  queueVisible();
-  queueBackground();
+  queueVisible(true);
 }
 
 function renderShell() {
@@ -141,7 +140,7 @@ function bindControls() {
     pinnedA = selectedB;
     pageA = pageB;
     updateAll();
-    queueVisible();
+    queueVisible(true);
   });
   required<HTMLInputElement>("#collapse").addEventListener("change", (event) => {
     collapseUnchanged = (event.target as HTMLInputElement).checked;
@@ -231,7 +230,6 @@ function connectEvents() {
     updateAll();
     if (payload.status.phase === "ready") {
       queueNeighbors();
-      queueBackground();
     }
   });
   events.onerror = () => {
@@ -265,7 +263,7 @@ function updateAll() {
   required<HTMLElement>("#history-description").textContent =
     historyMode === "first-parent"
       ? "The main story, oldest at left."
-      : "Branches and merges, oldest at left.";
+      : "Newest at top, with branches and merges at left.";
 }
 
 function renderRevisionNotes() {
@@ -307,6 +305,9 @@ function renderTimeline() {
     return;
   }
 
+  const previousScroll = film.scrollLeft;
+  const selectedKey = session.revisions[selectedB].key;
+  const selectionChanged = film.dataset.selectedKey !== selectedKey;
   const keys = visibleHistoryKeys();
   const visible = keys
     .map((key) => ({ revision: revisionByKey(key), index: revisionIndex(key) }))
@@ -341,8 +342,11 @@ function renderTimeline() {
     button.addEventListener("click", () => selectRevision(Number(button.dataset.index)));
   });
   const selected = film.querySelector<HTMLElement>(".selected");
-  if (selected) {
+  film.dataset.selectedKey = selectedKey;
+  if (selected && selectionChanged) {
     film.scrollLeft = Math.max(0, selected.offsetLeft - film.clientWidth / 2 + selected.clientWidth / 2);
+  } else {
+    film.scrollLeft = previousScroll;
   }
 }
 
@@ -350,25 +354,45 @@ function renderTree(tree: HTMLElement) {
   const keys = session.history.full_tree_keys;
   const graph = layoutRevisionGraph(session.revisions, keys);
   const nodes = new Map(graph.nodes.map((node) => [node.key, node]));
-  const stepX = 188;
-  const stepY = 92;
-  const insetX = 14;
-  const insetY = 14;
-  const nodeWidth = 166;
-  const nodeHeight = 72;
-  const width = Math.max(tree.clientWidth || 0, keys.length * stepX + insetX * 2);
-  const height = Math.max(112, graph.laneCount * stepY + insetY * 2);
+  const previousScroll = tree.scrollTop;
+  const selectedKey = session.revisions[selectedB].key;
+  const selectionChanged = tree.dataset.selectedKey !== selectedKey;
+  const rowHeight = 58;
+  const insetY = 8;
+  const visibleLanes = Math.min(8, graph.laneCount);
+  const railWidth = 34 + visibleLanes * 18;
+  const laneX = (lane: number) =>
+    graph.laneCount < 2 ? 18 : 16 + (lane / (graph.laneCount - 1)) * (railWidth - 32);
+  const height = keys.length * rowHeight + insetY * 2;
+  const rowByKey = new Map(graph.nodes.map((node) => [node.key, node.row]));
   const edges = graph.edges
     .map((edge) => {
       const child = nodes.get(edge.child);
       const parent = nodes.get(edge.parent);
       if (!child || !parent) return "";
-      const x1 = insetX + child.column * stepX + nodeWidth / 2;
-      const y1 = insetY + child.lane * stepY + nodeHeight / 2;
-      const x2 = insetX + parent.column * stepX + nodeWidth / 2;
-      const y2 = insetY + parent.lane * stepY + nodeHeight / 2;
-      const bend = (x1 + x2) / 2;
-      return `<path class="${edge.merge ? "merge-edge" : ""}" d="M ${x1} ${y1} C ${bend} ${y1}, ${bend} ${y2}, ${x2} ${y2}" />`;
+      const childRow = rowByKey.get(edge.child);
+      const parentRow = rowByKey.get(edge.parent);
+      if (childRow == null || parentRow == null) return "";
+      const x1 = laneX(child.lane);
+      const y1 = insetY + childRow * rowHeight + rowHeight / 2;
+      const x2 = laneX(parent.lane);
+      const y2 = insetY + parentRow * rowHeight + rowHeight / 2;
+      const bend = (y1 + y2) / 2;
+      return `<path class="${edge.merge ? "merge-edge" : ""}" d="M ${x1} ${y1} C ${x1} ${bend}, ${x2} ${bend}, ${x2} ${y2}" />`;
+    })
+    .join("");
+  const dots = graph.nodes
+    .map((node) => {
+      const row = rowByKey.get(node.key);
+      if (row == null) return "";
+      const index = revisionIndex(node.key);
+      const classes = [
+        index === selectedB ? "selected" : "",
+        index === pinnedA ? "pinned" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `<circle class="${classes}" cx="${laneX(node.lane)}" cy="${insetY + row * rowHeight + rowHeight / 2}" r="5" />`;
     })
     .join("");
   const cards = graph.nodes
@@ -379,7 +403,6 @@ function renderTree(tree: HTMLElement) {
       return `
         <button
           class="tree-node ${index === selectedB ? "selected" : ""} ${index === pinnedA ? "pinned" : ""}"
-          style="left:${insetX + node.column * stepX}px;top:${insetY + node.lane * stepY}px"
           type="button"
           role="option"
           aria-selected="${index === selectedB}"
@@ -387,26 +410,30 @@ function renderTree(tree: HTMLElement) {
           data-phase="${phase}"
           title="${escapeHtml(revision.changed_paths.join("\n"))}"
         >
-          <time>${shortDate(revision.committed_at)}</time>
-          <strong>${escapeHtml(revision.subject || "(no description)")}</strong>
-          <span>${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}</span>
+          <span class="tree-subject">
+            <strong>${escapeHtml(revision.subject || "(no description)")}</strong>
+            <time>${shortDate(revision.committed_at)}</time>
+          </span>
+          <span class="tree-meta">${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}</span>
         </button>
       `;
     })
     .join("");
   tree.innerHTML = `
-    <div class="tree-canvas" style="width:${width}px;height:${height}px">
-      <svg aria-hidden="true" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${edges}</svg>
+    <div class="tree-canvas" data-lanes="${visibleLanes}">
+      <svg aria-hidden="true" viewBox="0 0 ${railWidth} ${height}" width="${railWidth}" height="${height}">${edges}${dots}</svg>
       ${cards}
     </div>
   `;
   tree.querySelectorAll<HTMLButtonElement>(".tree-node").forEach((button) => {
     button.addEventListener("click", () => selectRevision(Number(button.dataset.index)));
   });
-  const selected = tree.querySelector<HTMLElement>(".selected");
-  if (selected) {
-    tree.scrollLeft = Math.max(0, selected.offsetLeft - tree.clientWidth / 2 + selected.clientWidth / 2);
+  const selected = tree.querySelector<HTMLElement>(".tree-node.selected");
+  tree.dataset.selectedKey = selectedKey;
+  if (selected && selectionChanged) {
     tree.scrollTop = Math.max(0, selected.offsetTop - tree.clientHeight / 2 + selected.clientHeight / 2);
+  } else {
+    tree.scrollTop = previousScroll;
   }
 }
 
@@ -417,7 +444,6 @@ function renderRevisionScrubber() {
   const position = Math.max(0, keys.indexOf(selectedKey));
   slider.max = String(Math.max(0, keys.length - 1));
   slider.value = String(position);
-  slider.style.setProperty("--progress", `${keys.length < 2 ? 100 : (position / (keys.length - 1)) * 100}%`);
   const revision = keys[position] ? revisionByKey(keys[position]) : undefined;
   required<HTMLOutputElement>("#revision-position").textContent = revision
     ? `${position + 1} / ${keys.length} · ${shortDate(revision.committed_at)} · ${revision.subject || "(no description)"}`
@@ -469,7 +495,13 @@ function renderStage() {
   const right = pageUrl(rightRevision.render, pageB);
 
   if (mode === "single") {
-    stage.innerHTML = pageOrStatus(rightRevision, right, "B");
+    const same = outputMatchesFirstParent(rightRevision);
+    stage.innerHTML = `
+      <div class="single-page">
+        ${pageOrStatus(rightRevision, right, "B")}
+        ${same ? `<span class="same-output">Same rendered output as first parent</span>` : ""}
+      </div>
+    `;
     return;
   }
   if (!left || !right) {
@@ -522,12 +554,20 @@ function setMix(value: number) {
 function applyMix() {
   const range = document.querySelector<HTMLInputElement>("#mix");
   const number = document.querySelector<HTMLInputElement>("#mix-number");
-  if (range) valueAndProgress(range, mix);
+  if (range) range.value = String(mix);
   if (number) number.value = String(mix);
-  document.querySelector<HTMLElement>(".mix-page")?.style.setProperty("opacity", String(mix / 100));
-  document.querySelector<HTMLElement>(".wipe")?.style.setProperty("clip-path", `inset(0 ${100 - mix}% 0 0)`);
-  document.querySelector<HTMLElement>(".wipe-line")?.style.setProperty("left", `${mix}%`);
-  document.querySelector<HTMLElement>(".wipe-handle")?.style.setProperty("left", `${mix}%`);
+  holdStyle(document.querySelector<HTMLElement>(".mix-page"), { opacity: mix / 100 });
+  holdStyle(document.querySelector<HTMLElement>(".wipe"), {
+    clipPath: `inset(0 ${100 - mix}% 0 0)`,
+  });
+  holdStyle(document.querySelector<HTMLElement>(".wipe-line"), { left: `${mix}%` });
+  holdStyle(document.querySelector<HTMLElement>(".wipe-handle"), { left: `${mix}%` });
+}
+
+function holdStyle(element: HTMLElement | null, frame: Keyframe) {
+  if (!element) return;
+  element.getAnimations().forEach((animation) => animation.cancel());
+  element.animate([frame, frame], { duration: 1, fill: "forwards" });
 }
 
 function setMixFromPointer(event: PointerEvent) {
@@ -609,10 +649,17 @@ function selectRelative(offset: number) {
   selectRevision(revisionIndex(keys[next]));
 }
 
-function queueVisible() {
-  void queueRevision(session.revisions[selectedB]);
-  void queueRevision(session.revisions[pinnedA]);
-  queueNeighbors();
+function queueVisible(immediate = false) {
+  window.clearTimeout(selectionTimer);
+  const queue = () => {
+    void queueRevision(session.revisions[selectedB]);
+    void queueRevision(session.revisions[pinnedA]);
+  };
+  if (immediate) {
+    queue();
+  } else {
+    selectionTimer = window.setTimeout(queue, 120);
+  }
 }
 
 function queueNeighbors() {
@@ -621,14 +668,6 @@ function queueNeighbors() {
   for (const position of [current - 1, current + 1]) {
     if (position >= 0 && position < keys.length) void queueRevision(revisionByKey(keys[position]));
   }
-}
-
-function queueBackground() {
-  window.clearTimeout(backgroundTimer);
-  backgroundTimer = window.setTimeout(() => {
-    const next = session.revisions.find((revision) => revision.render == null);
-    if (next) void queueRevision(next);
-  }, 400);
 }
 
 async function queueRevision(revision: Revision | undefined) {
@@ -664,6 +703,12 @@ function pageImage(url: string, alt: string): string {
   return `<img class="document-page" src="${url}" alt="${alt}" draggable="false" />`;
 }
 
+function outputMatchesFirstParent(revision: Revision): boolean {
+  const parentId = revision.parent_ids[0];
+  const parent = session.revisions.find((candidate) => candidate.commit_id === parentId);
+  return Boolean(parent && outputsMatch(revision.render, parent.render));
+}
+
 function modeButton(value: CompareMode, label: string): string {
   return `<button type="button" data-mode="${value}" aria-pressed="${value === mode}">${label}</button>`;
 }
@@ -691,11 +736,6 @@ function revisionByKey(key: string): Revision {
 
 function revisionIndex(key: string): number {
   return session.revisions.findIndex((revision) => revision.key === key);
-}
-
-function valueAndProgress(input: HTMLInputElement, value: number) {
-  input.value = String(value);
-  input.style.setProperty("--progress", `${value}%`);
 }
 
 function shortDate(value: string): string {

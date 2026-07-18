@@ -107,7 +107,7 @@ impl HistoryRepository {
             VcsPreference::Jj => Self::discover_jj(start),
             VcsPreference::Git => Self::discover_git(start),
             VcsPreference::Auto => {
-                if has_jj_repository(start) {
+                if find_jj_workspace(start).is_some() {
                     Self::discover_jj(start)
                 } else {
                     Self::discover_git(start)
@@ -117,12 +117,14 @@ impl HistoryRepository {
     }
 
     fn discover_jj(start: &Path) -> Result<Self> {
+        let workspace = find_jj_workspace(start)
+            .with_context(|| format!("no JJ workspace found at or above {}", start.display()))?;
         let root = run_text(
             Command::new("jj")
                 .arg("--ignore-working-copy")
                 .arg("--at-operation=@")
                 .arg("-R")
-                .arg(start)
+                .arg(workspace)
                 .arg("root"),
             "discover JJ repository",
         )?;
@@ -515,17 +517,10 @@ fn history_revset(start: &str, traversal: HistoryTraversal) -> String {
     }
 }
 
-fn has_jj_repository(start: &Path) -> bool {
-    Command::new("jj")
-        .arg("--ignore-working-copy")
-        .arg("--at-operation=@")
-        .arg("-R")
-        .arg(start)
-        .arg("root")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+fn find_jj_workspace(start: &Path) -> Option<&Path> {
+    start
+        .ancestors()
+        .find(|ancestor| ancestor.join(".jj").exists())
 }
 
 fn run(command: &mut Command, action: &str) -> Result<Output> {
@@ -754,7 +749,10 @@ mod tests {
         fs::create_dir(&root)?;
         git(&root, &["init", "-b", "main"])?;
         fs::write(root.join("main.typ"), "= First\n")?;
+        fs::create_dir(root.join("nested"))?;
+        fs::write(root.join("nested").join("entry.typ"), "= Nested\n")?;
         git(&root, &["add", "main.typ"])?;
+        git(&root, &["add", "nested/entry.typ"])?;
         commit(&root, "first")?;
         let status = Command::new("jj")
             .args(["git", "init", "--colocate"])
@@ -763,13 +761,18 @@ mod tests {
         assert!(status.success());
 
         let before = jj_operation(&root)?;
-        let repository = HistoryRepository::discover(&root, VcsPreference::Auto)?;
+        let repository =
+            HistoryRepository::discover(&root.join("nested/entry.typ"), VcsPreference::Auto)?;
         assert_eq!(repository.info.kind, VcsKind::Jj);
         let revisions = repository.revisions(None, 10, &[])?;
         assert_eq!(revisions.len(), 1);
         assert_eq!(revisions[0].subject, "first");
         let after = jj_operation(&root)?;
         assert_eq!(before, after);
+
+        let forced_git =
+            HistoryRepository::discover(&root.join("nested/entry.typ"), VcsPreference::Git)?;
+        assert_eq!(forced_git.info.kind, VcsKind::Git);
         Ok(())
     }
 
