@@ -1,26 +1,34 @@
+# typed: strict
+# frozen_string_literal: true
+
+# Homebrew formula for Typst Time Machine release binaries.
 class TypstTimeMachine < Formula
   desc "Browse rendered Typst documents through Git and Jujutsu history"
   homepage "https://github.com/EzraCerpac/typst-time-machine"
   version "@VERSION@"
   license "MIT"
 
+  depends_on "git"
+  depends_on "typst"
+
   on_macos do
-    if Hardware::CPU.arm?
+    on_arm do
       url "@BASE_URL@/ttm-aarch64-apple-darwin.tar.gz"
       sha256 "@MAC_ARM_SHA@"
-    else
+    end
+
+    on_intel do
       url "@BASE_URL@/ttm-x86_64-apple-darwin.tar.gz"
       sha256 "@MAC_INTEL_SHA@"
     end
   end
 
   on_linux do
-    url "@BASE_URL@/ttm-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "@LINUX_SHA@"
+    on_intel do
+      url "@BASE_URL@/ttm-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "@LINUX_SHA@"
+    end
   end
-
-  depends_on "typst"
-  depends_on "git"
 
   def install
     bin.install "ttm"
@@ -30,4 +38,3 @@ class TypstTimeMachine < Formula
     assert_match version.to_s, shell_output("#{bin}/ttm --version")
   end
 end
-
