@@ -55,7 +55,31 @@ export interface Session {
     typst: string;
   };
   compiler: string;
+  history: {
+    first_parent_keys: string[];
+    full_tree_keys: string[];
+  };
   revisions: Revision[];
+}
+
+export type HistoryMode = "first-parent" | "full-tree";
+
+export interface GraphNode {
+  key: string;
+  column: number;
+  lane: number;
+}
+
+export interface GraphEdge {
+  child: string;
+  parent: string;
+  merge: boolean;
+}
+
+export interface GraphLayout {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  laneCount: number;
 }
 
 export type PageRelation = "same" | "changed" | "added" | "removed" | "waiting";
@@ -106,3 +130,47 @@ export function phaseLabel(status: RenderStatus | undefined): string {
   }
 }
 
+export function layoutRevisionGraph(revisions: Revision[], newestFirstKeys: string[]): GraphLayout {
+  const byKey = new Map(revisions.map((revision) => [revision.key, revision]));
+  const keyByCommit = new Map(revisions.map((revision) => [revision.commit_id, revision.key]));
+  const visibleCommits = new Set(
+    newestFirstKeys.map((key) => byKey.get(key)?.commit_id).filter((id): id is string => Boolean(id)),
+  );
+  const active: string[] = [];
+  const nodes: GraphNode[] = [];
+
+  newestFirstKeys.forEach((key, order) => {
+    const revision = byKey.get(key);
+    if (!revision) return;
+    let lane = active.indexOf(revision.commit_id);
+    if (lane < 0) {
+      lane = active.length;
+    } else {
+      active.splice(lane, 1);
+    }
+    nodes.push({ key, column: newestFirstKeys.length - order - 1, lane });
+
+    revision.parent_ids
+      .filter((parent) => visibleCommits.has(parent))
+      .forEach((parent, parentIndex) => {
+        if (active.includes(parent)) return;
+        active.splice(Math.min(lane + parentIndex, active.length), 0, parent);
+      });
+  });
+
+  const positioned = new Map(nodes.map((node) => [node.key, node]));
+  const edges = newestFirstKeys.flatMap((key) => {
+    const revision = byKey.get(key);
+    if (!revision || !positioned.has(key)) return [];
+    return revision.parent_ids.flatMap((parent, parentIndex) => {
+      const parentKey = keyByCommit.get(parent);
+      if (!parentKey || !positioned.has(parentKey)) return [];
+      return [{ child: key, parent: parentKey, merge: parentIndex > 0 }];
+    });
+  });
+  return {
+    nodes,
+    edges,
+    laneCount: Math.max(1, ...nodes.map((node) => node.lane + 1)),
+  };
+}

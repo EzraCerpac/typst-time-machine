@@ -139,17 +139,17 @@ async fn view(args: ViewArgs) -> Result<()> {
             typst: args.typst,
         },
     )?;
-    let revisions = repository.revisions(args.at.as_deref(), args.limit, &target.history_paths)?;
-    if revisions.is_empty() {
+    let history = repository.history(args.at.as_deref(), args.limit, &target.history_paths)?;
+    if history.first_parent_keys.is_empty() {
         bail!("no matching first-parent revisions found");
     }
 
-    let render = RenderManager::new(Arc::clone(&repository), target, &revisions)?;
-    render.queue(&revisions[0].key).await?;
-    if let Some(parent) = revisions.get(1) {
-        render.queue(&parent.key).await?;
+    let render = RenderManager::new(Arc::clone(&repository), target, &history.revisions)?;
+    render.queue(&history.first_parent_keys[0]).await?;
+    if let Some(parent) = history.first_parent_keys.get(1) {
+        render.queue(parent).await?;
     }
-    server::serve(repository.info.clone(), revisions, render, !args.no_open).await
+    server::serve(repository.info.clone(), history, render, !args.no_open).await
 }
 
 fn cache(command: CacheCommand) -> Result<()> {

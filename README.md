@@ -66,8 +66,11 @@ one operation and starts at `@-`, excluding the working-copy commit and
 unsnapshotted filesystem state.
 
 The viewer initially renders the latest revision and its parent. Other revisions
-render lazily when approached. Arrow keys scrub history. Space temporarily shows
-revision A in Blink mode.
+render lazily when approached. The revision scrubber travels through the loaded
+history. The history dock can switch between the first-parent story and the full
+reachable revision tree. Arrow keys scrub the active view. Space temporarily
+shows revision A in Blink mode, and Wipe mode can be dragged directly on the
+document.
 
 Inspect or clear cached render artifacts:
 
@@ -98,9 +101,9 @@ ttm view --target resume
 ```
 
 CLI values override target values. Configuration is optional and never created
-automatically. Without `history_paths`, all first-parent revisions within
-`--limit` remain visible; byte-identical output is marked and can be collapsed
-inside the viewer.
+automatically. Without `history_paths`, first-parent and full-tree histories are
+loaded up to `--limit`; byte-identical first-parent output is marked and can be
+collapsed inside the viewer.
 
 ## Safety and fidelity
 
@@ -142,12 +145,13 @@ version-coupled preview protocol.
 
 ## Current limits
 
-- First-parent history only
+- The revision tree is limited by `--limit` and shows reachable ancestors, not
+  unrelated repository heads
 - Historical committed revisions only
 - Git-backed JJ repositories
 - Fixed entrypoint path; renamed historical entrypoints are not guessed
 - Physical page-number pairing with manual A/B selectors
-- No source editor, full DAG, CI snapshot manager, or publishing
+- No source editor, CI snapshot manager, or publishing
 
 ## License
 

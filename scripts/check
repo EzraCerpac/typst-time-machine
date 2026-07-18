@@ -5,7 +5,6 @@ cargo fmt -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 bun run typecheck
-bun test
+bun run test
 bun run build
 cargo build --release
-

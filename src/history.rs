@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
@@ -51,6 +51,19 @@ pub struct Revision {
     pub committer_unix: i64,
     pub bookmarks: Vec<String>,
     pub changed_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct History {
+    pub revisions: Vec<Revision>,
+    pub first_parent_keys: Vec<String>,
+    pub full_tree_keys: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HistoryTraversal {
+    FirstParent,
+    FullTree,
 }
 
 #[derive(Debug)]
@@ -185,19 +198,66 @@ impl HistoryRepository {
         })
     }
 
+    #[cfg(test)]
     pub fn revisions(
         &self,
         start: Option<&str>,
         limit: usize,
         history_paths: &[PathBuf],
     ) -> Result<Vec<Revision>> {
+        self.collect_revisions(start, limit, history_paths, HistoryTraversal::FirstParent)
+    }
+
+    pub fn history(
+        &self,
+        start: Option<&str>,
+        limit: usize,
+        history_paths: &[PathBuf],
+    ) -> Result<History> {
+        let first_parent =
+            self.collect_revisions(start, limit, history_paths, HistoryTraversal::FirstParent)?;
+        let full_tree =
+            self.collect_revisions(start, limit, history_paths, HistoryTraversal::FullTree)?;
+        let first_parent_keys = first_parent
+            .iter()
+            .map(|revision| revision.key.clone())
+            .collect::<Vec<_>>();
+        let full_tree_keys = full_tree
+            .iter()
+            .map(|revision| revision.key.clone())
+            .collect::<Vec<_>>();
+
+        let mut revisions = full_tree;
+        let mut known = revisions
+            .iter()
+            .map(|revision| revision.commit_id.clone())
+            .collect::<HashSet<_>>();
+        for revision in first_parent {
+            if known.insert(revision.commit_id.clone()) {
+                revisions.push(revision);
+            }
+        }
+        Ok(History {
+            revisions,
+            first_parent_keys,
+            full_tree_keys,
+        })
+    }
+
+    fn collect_revisions(
+        &self,
+        start: Option<&str>,
+        limit: usize,
+        history_paths: &[PathBuf],
+        traversal: HistoryTraversal,
+    ) -> Result<Vec<Revision>> {
         let mut revisions = match self.info.kind {
-            VcsKind::Git => self.git_revisions(start.unwrap_or("HEAD"), limit)?,
-            VcsKind::Jj => self.jj_revisions(start.unwrap_or("@-"), limit)?,
+            VcsKind::Git => self.git_revisions(start.unwrap_or("HEAD"), limit, traversal)?,
+            VcsKind::Jj => self.jj_revisions(start.unwrap_or("@-"), limit, traversal)?,
         };
         let bookmark_map = match self.info.kind {
             VcsKind::Git => self.git_bookmarks()?,
-            VcsKind::Jj => self.jj_bookmarks(start.unwrap_or("@-"), limit)?,
+            VcsKind::Jj => self.jj_bookmarks(start.unwrap_or("@-"), limit, traversal)?,
         };
         for revision in &mut revisions {
             revision.bookmarks = bookmark_map
@@ -218,7 +278,12 @@ impl HistoryRepository {
         Ok(revisions)
     }
 
-    fn git_revisions(&self, start: &str, limit: usize) -> Result<Vec<Revision>> {
+    fn git_revisions(
+        &self,
+        start: &str,
+        limit: usize,
+        traversal: HistoryTraversal,
+    ) -> Result<Vec<Revision>> {
         let resolved = run_text(
             Command::new("git")
                 .arg("--git-dir")
@@ -228,26 +293,36 @@ impl HistoryRepository {
             "resolve Git start revision",
         )?;
         let format = "%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%ct%x00%s%x00%x1e";
-        let output = run(
-            Command::new("git")
-                .arg("--git-dir")
-                .arg(&self.git_dir)
-                .args(["log", "--first-parent"])
-                .arg(format!("--max-count={limit}"))
-                .arg(format!("--format={format}"))
-                .arg(resolved.trim()),
-            "read Git history",
-        )?;
+        let mut command = Command::new("git");
+        command.arg("--git-dir").arg(&self.git_dir).arg("log");
+        match traversal {
+            HistoryTraversal::FirstParent => {
+                command.arg("--first-parent");
+            }
+            HistoryTraversal::FullTree => {
+                command.args(["--topo-order", "--date-order"]);
+            }
+        }
+        command
+            .arg(format!("--max-count={limit}"))
+            .arg(format!("--format={format}"))
+            .arg(resolved.trim());
+        let output = run(&mut command, "read Git history")?;
         parse_git_log(&output.stdout)
     }
 
-    fn jj_revisions(&self, start: &str, limit: usize) -> Result<Vec<Revision>> {
+    fn jj_revisions(
+        &self,
+        start: &str,
+        limit: usize,
+        traversal: HistoryTraversal,
+    ) -> Result<Vec<Revision>> {
         let operation = self
             .info
             .operation_id
             .as_deref()
             .context("missing pinned JJ operation")?;
-        let revset = format!("first_ancestors({start}) & ~root()");
+        let revset = history_revset(start, traversal);
         let output = run_text(
             Command::new("jj")
                 .arg("--at-operation")
@@ -302,13 +377,18 @@ impl HistoryRepository {
         Ok(parse_bookmark_lines(&output))
     }
 
-    fn jj_bookmarks(&self, start: &str, limit: usize) -> Result<HashMap<String, Vec<String>>> {
+    fn jj_bookmarks(
+        &self,
+        start: &str,
+        limit: usize,
+        traversal: HistoryTraversal,
+    ) -> Result<HashMap<String, Vec<String>>> {
         let operation = self
             .info
             .operation_id
             .as_deref()
             .context("missing pinned JJ operation")?;
-        let revset = format!("first_ancestors({start}) & ~root()");
+        let revset = history_revset(start, traversal);
         let output = run_text(
             Command::new("jj")
                 .arg("--at-operation")
@@ -426,6 +506,13 @@ impl HistoryRepository {
 
 fn is_root_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|byte| byte == b'0')
+}
+
+fn history_revset(start: &str, traversal: HistoryTraversal) -> String {
+    match traversal {
+        HistoryTraversal::FirstParent => format!("first_ancestors({start}) & ~root()"),
+        HistoryTraversal::FullTree => format!("ancestors({start}) & ~root()"),
+    }
 }
 
 fn has_jj_repository(start: &Path) -> bool {
@@ -683,6 +770,71 @@ mod tests {
         assert_eq!(revisions[0].subject, "first");
         let after = jj_operation(&root)?;
         assert_eq!(before, after);
+        Ok(())
+    }
+
+    #[test]
+    fn full_history_keeps_side_branches_and_first_parent_story() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repo");
+        fs::create_dir(&root)?;
+        git(&root, &["init", "-b", "main"])?;
+        fs::write(root.join("main.typ"), "= Base\n")?;
+        git(&root, &["add", "main.typ"])?;
+        commit(&root, "base")?;
+        git(&root, &["checkout", "-b", "feature"])?;
+        fs::write(root.join("feature.typ"), "= Feature\n")?;
+        git(&root, &["add", "feature.typ"])?;
+        commit(&root, "feature")?;
+        git(&root, &["checkout", "main"])?;
+        fs::write(root.join("main.typ"), "= Main\n")?;
+        git(&root, &["add", "main.typ"])?;
+        commit(&root, "main")?;
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "merge",
+                "--no-ff",
+                "feature",
+                "-m",
+                "merge feature",
+            ],
+        )?;
+
+        let repository = HistoryRepository::discover(&root, VcsPreference::Git)?;
+        let history = repository.history(None, 10, &[])?;
+        let first_parent_subjects = history
+            .first_parent_keys
+            .iter()
+            .map(|key| {
+                history
+                    .revisions
+                    .iter()
+                    .find(|revision| &revision.key == key)
+                    .map(|revision| revision.subject.as_str())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let full_subjects = history
+            .full_tree_keys
+            .iter()
+            .map(|key| {
+                history
+                    .revisions
+                    .iter()
+                    .find(|revision| &revision.key == key)
+                    .map(|revision| revision.subject.as_str())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(first_parent_subjects, ["merge feature", "main", "base"]);
+        assert!(full_subjects.contains(&"feature"));
+        assert_eq!(history.revisions.len(), 4);
         Ok(())
     }
 

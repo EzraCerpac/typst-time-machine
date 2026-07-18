@@ -1,8 +1,10 @@
 import {
+  layoutRevisionGraph,
   outputsMatch,
   pageRelation,
   phaseLabel,
   shortId,
+  type HistoryMode,
   type RenderStatus,
   type Revision,
   type Session,
@@ -20,11 +22,13 @@ let pinnedA = 1;
 let pageA = 0;
 let pageB = 0;
 let mode: CompareMode = "single";
+let historyMode: HistoryMode = "first-parent";
 let mix = 50;
 let collapseUnchanged = false;
 let blinkHeld = false;
 let heatmapGeneration = 0;
 let backgroundTimer: number | undefined;
+let draggingWipe = false;
 
 void boot();
 
@@ -33,7 +37,8 @@ async function boot() {
   const response = await fetch(`${tokenBase}/api/session`);
   if (!response.ok) throw new Error("Could not load Typst history.");
   session = (await response.json()) as Session;
-  if (session.revisions.length < 2) pinnedA = 0;
+  selectedB = revisionIndex(session.history.first_parent_keys[0]);
+  pinnedA = revisionIndex(session.history.first_parent_keys[1] ?? session.history.first_parent_keys[0]);
   renderShell();
   connectEvents();
   queueVisible();
@@ -68,9 +73,11 @@ function renderShell() {
           ${modeButton("wipe", "Wipe")}
           ${modeButton("heatmap", "Heat")}
         </div>
-        <label class="mix-control" data-visible="false">
-          <span>Position</span>
-          <input id="mix" type="range" min="0" max="100" value="${mix}" />
+        <label class="mix-control" data-visible="false" hidden>
+          <span id="mix-label">Wipe</span>
+          <input id="mix" type="range" min="0" max="100" value="${mix}" aria-label="Comparison position" />
+          <input id="mix-number" type="number" min="0" max="100" value="${mix}" aria-label="Comparison position percentage" />
+          <span aria-hidden="true">%</span>
         </label>
         <div class="page-controls">
           <label>A <select id="page-a" aria-label="Page for revision A"></select></label>
@@ -90,15 +97,27 @@ function renderShell() {
     <footer class="history-dock">
       <div class="history-heading">
         <div>
-          <p class="eyebrow">First-parent history</p>
-          <p>Old document at left. Present at right.</p>
+          <p class="eyebrow" id="history-title">First-parent history</p>
+          <p id="history-description">The main story, oldest at left.</p>
         </div>
-        <label class="collapse">
-          <input id="collapse" type="checkbox" />
-          Hide visually unchanged
-        </label>
+        <div class="history-actions">
+          <div class="history-mode-group" role="group" aria-label="History shape">
+            <button type="button" data-history-mode="first-parent" aria-pressed="true">First parent</button>
+            <button type="button" data-history-mode="full-tree" aria-pressed="false">Full tree</button>
+          </div>
+          <label class="collapse">
+            <input id="collapse" type="checkbox" />
+            Hide visually unchanged
+          </label>
+        </div>
+      </div>
+      <div class="revision-scrubber">
+        <label for="revision-slider">Travel through revisions</label>
+        <input id="revision-slider" type="range" min="0" max="0" value="0" />
+        <output id="revision-position"></output>
       </div>
       <div class="film" id="film" role="listbox" aria-label="Document revisions"></div>
+      <div class="tree" id="tree" role="listbox" aria-label="Full revision tree" hidden></div>
     </footer>
   `;
   bindControls();
@@ -113,8 +132,10 @@ function bindControls() {
     });
   });
   required<HTMLInputElement>("#mix").addEventListener("input", (event) => {
-    mix = Number((event.target as HTMLInputElement).value);
-    renderStage();
+    setMix(Number((event.target as HTMLInputElement).value));
+  });
+  required<HTMLInputElement>("#mix-number").addEventListener("input", (event) => {
+    setMix(Number((event.target as HTMLInputElement).value));
   });
   required<HTMLButtonElement>("#pin-a").addEventListener("click", () => {
     pinnedA = selectedB;
@@ -125,6 +146,24 @@ function bindControls() {
   required<HTMLInputElement>("#collapse").addEventListener("change", (event) => {
     collapseUnchanged = (event.target as HTMLInputElement).checked;
     renderTimeline();
+    renderRevisionScrubber();
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-history-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      historyMode = button.dataset.historyMode as HistoryMode;
+      const keys = activeHistoryKeys();
+      if (!keys.includes(session.revisions[selectedB].key)) {
+        selectedB = revisionIndex(keys[0]);
+        pageB = 0;
+      }
+      updateAll();
+      queueVisible();
+    });
+  });
+  required<HTMLInputElement>("#revision-slider").addEventListener("input", (event) => {
+    const keys = [...visibleHistoryKeys()].reverse();
+    const key = keys[Number((event.target as HTMLInputElement).value)];
+    if (key) selectRevision(revisionIndex(key));
   });
   required<HTMLSelectElement>("#page-a").addEventListener("change", (event) => {
     pageA = Number((event.target as HTMLSelectElement).value);
@@ -137,10 +176,23 @@ function bindControls() {
     renderPageRail();
   });
   const stage = required<HTMLElement>("#stage");
-  stage.addEventListener("pointerdown", () => {
+  stage.addEventListener("pointerdown", (event) => {
     if (mode === "blink") {
       blinkHeld = true;
       renderStage();
+    } else if (mode === "wipe" && event.button === 0) {
+      draggingWipe = true;
+      stage.setPointerCapture(event.pointerId);
+      setMixFromPointer(event);
+    }
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (draggingWipe) setMixFromPointer(event);
+  });
+  stage.addEventListener("pointerup", (event) => {
+    if (draggingWipe) {
+      draggingWipe = false;
+      stage.releasePointerCapture(event.pointerId);
     }
   });
   window.addEventListener("pointerup", () => {
@@ -148,12 +200,13 @@ function bindControls() {
       blinkHeld = false;
       renderStage();
     }
+    draggingWipe = false;
   });
   window.addEventListener("keydown", (event) => {
     if (event.key === "ArrowLeft") {
-      selectRevision(Math.min(session.revisions.length - 1, selectedB + 1));
+      selectRelative(1);
     } else if (event.key === "ArrowRight") {
-      selectRevision(Math.max(0, selectedB - 1));
+      selectRelative(-1);
     } else if (event.code === "Space" && mode === "blink" && !event.repeat) {
       event.preventDefault();
       blinkHeld = true;
@@ -190,13 +243,29 @@ function updateAll() {
   renderRevisionNotes();
   renderPageSelectors();
   renderTimeline();
+  renderRevisionScrubber();
   renderPageRail();
   renderStage();
+  applyMix();
   root.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
   });
   const mixControl = required<HTMLElement>(".mix-control");
-  mixControl.dataset.visible = String(mode === "opacity" || mode === "wipe");
+  const mixVisible = mode === "opacity" || mode === "wipe";
+  mixControl.dataset.visible = String(mixVisible);
+  mixControl.hidden = !mixVisible;
+  required<HTMLElement>("#mix-label").textContent = mode === "opacity" ? "Blend" : "Wipe";
+  root.querySelectorAll<HTMLButtonElement>("[data-history-mode]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.historyMode === historyMode));
+  });
+  const collapse = required<HTMLInputElement>("#collapse");
+  collapse.disabled = historyMode === "full-tree";
+  required<HTMLElement>("#history-title").textContent =
+    historyMode === "first-parent" ? "First-parent history" : "Full revision tree";
+  required<HTMLElement>("#history-description").textContent =
+    historyMode === "first-parent"
+      ? "The main story, oldest at left."
+      : "Branches and merges, oldest at left.";
 }
 
 function renderRevisionNotes() {
@@ -230,17 +299,25 @@ function renderRevisionNote(container: HTMLElement, revision: Revision, letter: 
 
 function renderTimeline() {
   const film = required<HTMLElement>("#film");
-  const visible = session.revisions
-    .map((revision, index) => ({ revision, index }))
-    .filter(({ revision, index }) => {
-      if (!collapseUnchanged || index === session.revisions.length - 1) return true;
-      return !outputsMatch(revision.render, session.revisions[index + 1]?.render);
-    })
+  const tree = required<HTMLElement>("#tree");
+  film.hidden = historyMode !== "first-parent";
+  tree.hidden = historyMode !== "full-tree";
+  if (historyMode === "full-tree") {
+    renderTree(tree);
+    return;
+  }
+
+  const keys = visibleHistoryKeys();
+  const visible = keys
+    .map((key) => ({ revision: revisionByKey(key), index: revisionIndex(key) }))
     .reverse();
   film.innerHTML = visible
     .map(({ revision, index }) => {
       const phase = revision.render?.phase ?? "idle";
-      const unchanged = outputsMatch(revision.render, session.revisions[index + 1]?.render);
+      const sequenceIndex = session.history.first_parent_keys.indexOf(revision.key);
+      const olderKey = session.history.first_parent_keys[sequenceIndex + 1];
+      const older = olderKey ? revisionByKey(olderKey) : undefined;
+      const unchanged = outputsMatch(revision.render, older?.render);
       return `
         <button
           class="frame ${index === selectedB ? "selected" : ""} ${index === pinnedA ? "pinned" : ""}"
@@ -267,6 +344,84 @@ function renderTimeline() {
   if (selected) {
     film.scrollLeft = Math.max(0, selected.offsetLeft - film.clientWidth / 2 + selected.clientWidth / 2);
   }
+}
+
+function renderTree(tree: HTMLElement) {
+  const keys = session.history.full_tree_keys;
+  const graph = layoutRevisionGraph(session.revisions, keys);
+  const nodes = new Map(graph.nodes.map((node) => [node.key, node]));
+  const stepX = 188;
+  const stepY = 92;
+  const insetX = 14;
+  const insetY = 14;
+  const nodeWidth = 166;
+  const nodeHeight = 72;
+  const width = Math.max(tree.clientWidth || 0, keys.length * stepX + insetX * 2);
+  const height = Math.max(112, graph.laneCount * stepY + insetY * 2);
+  const edges = graph.edges
+    .map((edge) => {
+      const child = nodes.get(edge.child);
+      const parent = nodes.get(edge.parent);
+      if (!child || !parent) return "";
+      const x1 = insetX + child.column * stepX + nodeWidth / 2;
+      const y1 = insetY + child.lane * stepY + nodeHeight / 2;
+      const x2 = insetX + parent.column * stepX + nodeWidth / 2;
+      const y2 = insetY + parent.lane * stepY + nodeHeight / 2;
+      const bend = (x1 + x2) / 2;
+      return `<path class="${edge.merge ? "merge-edge" : ""}" d="M ${x1} ${y1} C ${bend} ${y1}, ${bend} ${y2}, ${x2} ${y2}" />`;
+    })
+    .join("");
+  const cards = graph.nodes
+    .map((node) => {
+      const revision = revisionByKey(node.key);
+      const index = revisionIndex(node.key);
+      const phase = revision.render?.phase ?? "idle";
+      return `
+        <button
+          class="tree-node ${index === selectedB ? "selected" : ""} ${index === pinnedA ? "pinned" : ""}"
+          style="left:${insetX + node.column * stepX}px;top:${insetY + node.lane * stepY}px"
+          type="button"
+          role="option"
+          aria-selected="${index === selectedB}"
+          data-index="${index}"
+          data-phase="${phase}"
+          title="${escapeHtml(revision.changed_paths.join("\n"))}"
+        >
+          <time>${shortDate(revision.committed_at)}</time>
+          <strong>${escapeHtml(revision.subject || "(no description)")}</strong>
+          <span>${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}</span>
+        </button>
+      `;
+    })
+    .join("");
+  tree.innerHTML = `
+    <div class="tree-canvas" style="width:${width}px;height:${height}px">
+      <svg aria-hidden="true" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${edges}</svg>
+      ${cards}
+    </div>
+  `;
+  tree.querySelectorAll<HTMLButtonElement>(".tree-node").forEach((button) => {
+    button.addEventListener("click", () => selectRevision(Number(button.dataset.index)));
+  });
+  const selected = tree.querySelector<HTMLElement>(".selected");
+  if (selected) {
+    tree.scrollLeft = Math.max(0, selected.offsetLeft - tree.clientWidth / 2 + selected.clientWidth / 2);
+    tree.scrollTop = Math.max(0, selected.offsetTop - tree.clientHeight / 2 + selected.clientHeight / 2);
+  }
+}
+
+function renderRevisionScrubber() {
+  const keys = [...visibleHistoryKeys()].reverse();
+  const slider = required<HTMLInputElement>("#revision-slider");
+  const selectedKey = session.revisions[selectedB].key;
+  const position = Math.max(0, keys.indexOf(selectedKey));
+  slider.max = String(Math.max(0, keys.length - 1));
+  slider.value = String(position);
+  slider.style.setProperty("--progress", `${keys.length < 2 ? 100 : (position / (keys.length - 1)) * 100}%`);
+  const revision = keys[position] ? revisionByKey(keys[position]) : undefined;
+  required<HTMLOutputElement>("#revision-position").textContent = revision
+    ? `${position + 1} / ${keys.length} · ${shortDate(revision.committed_at)} · ${revision.subject || "(no description)"}`
+    : "No revision";
 }
 
 function renderPageSelectors() {
@@ -340,21 +495,46 @@ function renderStage() {
     stage.innerHTML = `
       <div class="stack-pages">
         ${pageImage(left, "Revision A")}
-        <div class="overlay-page" style="opacity:${mix / 100}">${pageImage(right, "Revision B")}</div>
+        <div class="overlay-page mix-page">${pageImage(right, "Revision B")}</div>
       </div>
     `;
   } else if (mode === "wipe") {
     stage.innerHTML = `
-      <div class="stack-pages">
+      <div class="stack-pages wipe-pages">
         ${pageImage(left, "Revision A")}
-        <div class="overlay-page wipe" style="clip-path:inset(0 ${100 - mix}% 0 0)">${pageImage(right, "Revision B")}</div>
-        <span class="wipe-line" style="left:${mix}%"></span>
+        <div class="overlay-page wipe">${pageImage(right, "Revision B")}</div>
+        <span class="wipe-line" aria-hidden="true"></span>
+        <span class="wipe-handle" aria-hidden="true">A&nbsp;│&nbsp;B</span>
       </div>
     `;
   } else {
     stage.innerHTML = `<div class="heatmap"><canvas id="heatmap"></canvas><p id="heatmap-label">Calculating visual difference…</p></div>`;
     void buildHeatmap(left, right);
   }
+}
+
+function setMix(value: number) {
+  if (!Number.isFinite(value)) return;
+  mix = Math.min(100, Math.max(0, Math.round(value)));
+  applyMix();
+}
+
+function applyMix() {
+  const range = document.querySelector<HTMLInputElement>("#mix");
+  const number = document.querySelector<HTMLInputElement>("#mix-number");
+  if (range) valueAndProgress(range, mix);
+  if (number) number.value = String(mix);
+  document.querySelector<HTMLElement>(".mix-page")?.style.setProperty("opacity", String(mix / 100));
+  document.querySelector<HTMLElement>(".wipe")?.style.setProperty("clip-path", `inset(0 ${100 - mix}% 0 0)`);
+  document.querySelector<HTMLElement>(".wipe-line")?.style.setProperty("left", `${mix}%`);
+  document.querySelector<HTMLElement>(".wipe-handle")?.style.setProperty("left", `${mix}%`);
+}
+
+function setMixFromPointer(event: PointerEvent) {
+  const pages = document.querySelector<HTMLElement>(".wipe-pages");
+  if (!pages) return;
+  const bounds = pages.getBoundingClientRect();
+  setMix(((event.clientX - bounds.left) / bounds.width) * 100);
 }
 
 async function buildHeatmap(leftUrl: string, rightUrl: string) {
@@ -413,11 +593,20 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
 }
 
 function selectRevision(index: number) {
+  if (index < 0 || index >= session.revisions.length) return;
   selectedB = index;
   const pages = session.revisions[index].render?.pages.length ?? 1;
   pageB = Math.min(pageB, pages - 1);
   updateAll();
   queueVisible();
+}
+
+function selectRelative(offset: number) {
+  const keys = activeHistoryKeys();
+  const current = keys.indexOf(session.revisions[selectedB].key);
+  if (current < 0) return;
+  const next = Math.min(keys.length - 1, Math.max(0, current + offset));
+  selectRevision(revisionIndex(keys[next]));
 }
 
 function queueVisible() {
@@ -427,8 +616,10 @@ function queueVisible() {
 }
 
 function queueNeighbors() {
-  for (const index of [selectedB - 1, selectedB + 1]) {
-    if (index >= 0 && index < session.revisions.length) void queueRevision(session.revisions[index]);
+  const keys = activeHistoryKeys();
+  const current = keys.indexOf(session.revisions[selectedB].key);
+  for (const position of [current - 1, current + 1]) {
+    if (position >= 0 && position < keys.length) void queueRevision(revisionByKey(keys[position]));
   }
 }
 
@@ -475,6 +666,36 @@ function pageImage(url: string, alt: string): string {
 
 function modeButton(value: CompareMode, label: string): string {
   return `<button type="button" data-mode="${value}" aria-pressed="${value === mode}">${label}</button>`;
+}
+
+function activeHistoryKeys(): string[] {
+  return historyMode === "first-parent"
+    ? session.history.first_parent_keys
+    : session.history.full_tree_keys;
+}
+
+function visibleHistoryKeys(): string[] {
+  const keys = activeHistoryKeys();
+  if (historyMode === "full-tree" || !collapseUnchanged) return keys;
+  return keys.filter((key, index) => {
+    if (index === keys.length - 1) return true;
+    return !outputsMatch(revisionByKey(key).render, revisionByKey(keys[index + 1]).render);
+  });
+}
+
+function revisionByKey(key: string): Revision {
+  const revision = session.revisions.find((item) => item.key === key);
+  if (!revision) throw new Error(`Unknown revision: ${key}`);
+  return revision;
+}
+
+function revisionIndex(key: string): number {
+  return session.revisions.findIndex((revision) => revision.key === key);
+}
+
+function valueAndProgress(input: HTMLInputElement, value: number) {
+  input.value = String(value);
+  input.style.setProperty("--progress", `${value}%`);
 }
 
 function shortDate(value: string): string {

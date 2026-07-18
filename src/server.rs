@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 
 use crate::{
-    history::{RepoInfo, Revision},
+    history::{History, RepoInfo, Revision},
     render::{RenderManager, RenderStatus},
 };
 
@@ -30,6 +30,7 @@ struct AppState {
     token: String,
     origin: String,
     repository: RepoInfo,
+    history: Arc<SessionHistory>,
     revisions: Vec<Revision>,
     render: Arc<RenderManager>,
 }
@@ -39,7 +40,14 @@ struct SessionResponse {
     repository: RepoInfo,
     target: crate::config::ResolvedTarget,
     compiler: String,
+    history: SessionHistory,
     revisions: Vec<SessionRevision>,
+}
+
+#[derive(Clone, Serialize)]
+struct SessionHistory {
+    first_parent_keys: Vec<String>,
+    full_tree_keys: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -89,7 +97,7 @@ impl IntoResponse for ApiError {
 
 pub async fn serve(
     repository: RepoInfo,
-    revisions: Vec<Revision>,
+    history: History,
     render: Arc<RenderManager>,
     open_browser: bool,
 ) -> Result<()> {
@@ -104,11 +112,17 @@ pub async fn serve(
         .collect();
     let origin = format!("http://{address}");
     let url = format!("{origin}/{token}/");
+    let revisions = history.revisions;
+    let history = Arc::new(SessionHistory {
+        first_parent_keys: history.first_parent_keys,
+        full_tree_keys: history.full_tree_keys,
+    });
     let state = AppState {
         token,
         origin,
         repository,
         revisions,
+        history,
         render,
     };
 
@@ -199,6 +213,7 @@ async fn session(
         repository: state.repository.clone(),
         target: state.render.target().clone(),
         compiler: state.render.compiler_version().to_owned(),
+        history: (*state.history).clone(),
         revisions: state
             .revisions
             .iter()
