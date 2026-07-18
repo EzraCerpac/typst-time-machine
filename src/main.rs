@@ -1,5 +1,6 @@
 mod config;
 mod engine;
+mod hash;
 mod history;
 mod render;
 mod server;

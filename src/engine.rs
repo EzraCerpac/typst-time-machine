@@ -196,7 +196,7 @@ impl Engine {
             font_hash.update(format!("{info:?}").as_bytes());
             font_store.push((slot, info));
         }
-        let font_fingerprint = format!("{:x}", font_hash.finalize());
+        let font_fingerprint = crate::hash::lower_hex(font_hash.finalize());
 
         let data = config
             .package_path
@@ -365,7 +365,7 @@ impl Engine {
 fn content_hash(bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(bytes);
-    format!("{:x}", hash.finalize())
+    crate::hash::lower_hex(hash.finalize())
 }
 
 struct EngineWorld {

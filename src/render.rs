@@ -821,7 +821,7 @@ impl RenderManager {
         if let Some(path) = &self.target.package_cache_path {
             hash.update(path.as_os_str().as_encoded_bytes());
         }
-        format!("{:x}", hash.finalize())
+        crate::hash::lower_hex(hash.finalize())
     }
 
     fn cached_manifest(&self, render_id: &str) -> Result<Option<CacheManifest>> {
@@ -1180,7 +1180,7 @@ fn page_number(path: &Path) -> Option<usize> {
 fn hex_hash(bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(bytes);
-    format!("{:x}", hash.finalize())
+    crate::hash::lower_hex(hash.finalize())
 }
 
 #[cfg(test)]
