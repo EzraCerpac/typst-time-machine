@@ -16,7 +16,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::StreamExt as FuturesStreamExt;
-use rand::{Rng, distr::Alphanumeric};
+use rand::{RngExt, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, sync::oneshot};
 use tokio_stream::wrappers::BroadcastStream;
@@ -122,7 +122,7 @@ pub async fn serve(
         .context("bind local viewer")?;
     let address = listener.local_addr().context("read viewer address")?;
     let token: String = rand::rng()
-        .sample_iter(&Alphanumeric)
+        .sample_iter(Alphanumeric)
         .take(32)
         .map(char::from)
         .collect();
