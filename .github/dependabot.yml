@@ -13,6 +13,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # This tag is the minimum supported Rust version, not an action release.
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ["*"]
