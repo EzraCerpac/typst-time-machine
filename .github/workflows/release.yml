@@ -171,8 +171,11 @@ jobs:
         shell: bash
         run: |
           ruby -c typst-time-machine.rb
-          brew style typst-time-machine.rb
-          brew install --formula ./typst-time-machine.rb
+          brew tap-new --no-git ttm/release
+          test_tap="$(brew --repository ttm/release)"
+          cp typst-time-machine.rb "$test_tap/Formula/typst-time-machine.rb"
+          brew style ttm/release/typst-time-machine
+          brew install ttm/release/typst-time-machine
           test "$(ttm --version)" = "ttm ${GITHUB_REF_NAME#v}"
       - name: Publish formula
         shell: bash
