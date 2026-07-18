@@ -144,6 +144,22 @@ rasterized for heatmaps, inside a Web Worker. Tinymist partial rendering is not
 used: it still compiles the full document and exposes an experimental
 version-coupled preview protocol.
 
+## Releasing
+
+CI checks Linux and macOS, verifies Rust 1.85, and builds the publishable crate.
+Before tagging a release:
+
+```sh
+scripts/check
+cargo package --locked
+cargo publish --dry-run --locked
+```
+
+Pushing a tag matching the crate version, such as `v0.1.0`, creates Linux
+x86-64 and macOS x86-64/ARM64 archives with checksums, release notes, and a
+versioned Homebrew formula. Publishing to crates.io remains an explicit manual
+step with `cargo publish --locked`.
+
 ## Current limits
 
 - The revision tree is limited by `--limit` and shows reachable ancestors, not
