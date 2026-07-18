@@ -9,6 +9,7 @@ import {
   type Revision,
   type Session,
 } from "./model";
+import { LatestFrameScheduler, LeadingLatestThrottle } from "./scrubber";
 
 type CompareMode = "single" | "side" | "blink" | "opacity" | "wipe" | "heatmap";
 
@@ -42,8 +43,29 @@ let collapseUnchanged = false;
 let blinkHeld = false;
 let heatmapGeneration = 0;
 let draggingWipe = false;
-let selectionTimer: number | undefined;
-let previewTimer: number | undefined;
+let previewGeneration = 0;
+let focusGeneration = 0;
+const imagePreloads = new Map<string, Promise<void>>();
+const scrubSelection = new LatestFrameScheduler<number>((index) => {
+  selectRevision(index, false);
+});
+const focusRequests = new LeadingLatestThrottle<{
+  revisionKey: string;
+  pinnedRevisionKey: string;
+  historyMode: HistoryMode;
+  generation: number;
+}>(50, (focus) => {
+  void fetch(`${tokenBase}/api/focus`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      revision_key: focus.revisionKey,
+      pinned_revision_key: focus.pinnedRevisionKey,
+      history_mode: focus.historyMode,
+      generation: focus.generation,
+    }),
+  });
+});
 
 worker.addEventListener("error", (event) => {
   const label = document.querySelector<HTMLElement>("#heatmap-label");
@@ -66,7 +88,7 @@ async function boot() {
   pinnedA = revisionIndex(session.history.first_parent_keys[1] ?? session.history.first_parent_keys[0]);
   renderShell();
   connectEvents();
-  queueVisible(true);
+  focusVisible(true);
 }
 
 function renderShell() {
@@ -137,7 +159,10 @@ function renderShell() {
       </div>
       <div class="revision-scrubber">
         <label for="revision-slider">Travel through revisions</label>
-        <input id="revision-slider" type="range" min="0" max="0" value="0" />
+        <div class="revision-track">
+          <input id="revision-slider" type="range" min="0" max="0" value="0" />
+          <div class="readiness-rail" id="readiness-rail" aria-label="Revision render readiness"></div>
+        </div>
         <output id="revision-position"></output>
       </div>
       <div class="film" id="film" role="listbox" aria-label="Document revisions"></div>
@@ -164,7 +189,6 @@ function bindControls() {
     setMix(Number((event.target as HTMLInputElement).value));
   });
   required<HTMLButtonElement>("#pin-a").addEventListener("click", () => {
-    window.clearTimeout(previewTimer);
     previewedB = selectedB;
     pageB = Math.min(pageB, (session.revisions[previewedB].render?.pages.length ?? 1) - 1);
     const previous = pinnedA;
@@ -172,7 +196,7 @@ function bindControls() {
     pageA = pageB;
     patchPinnedSelection(previous, pinnedA);
     updateComparison();
-    queueVisible(true);
+    focusVisible(true);
   });
   required<HTMLInputElement>("#collapse").addEventListener("change", (event) => {
     collapseUnchanged = (event.target as HTMLInputElement).checked;
@@ -187,16 +211,22 @@ function bindControls() {
         selectedB = revisionIndex(keys[0]);
         pageB = 0;
       }
-      window.clearTimeout(previewTimer);
+      scrubSelection.cancel();
+      previewGeneration += 1;
       previewedB = selectedB;
       updateAll();
-      queueVisible();
+      focusVisible(true);
     });
   });
   required<HTMLInputElement>("#revision-slider").addEventListener("input", (event) => {
     const keys = [...visibleHistoryKeys()].reverse();
     const key = keys[Number((event.target as HTMLInputElement).value)];
-    if (key) selectRevision(revisionIndex(key), true);
+    if (key) scrubSelection.schedule(revisionIndex(key));
+  });
+  required<HTMLInputElement>("#revision-slider").addEventListener("change", (event) => {
+    void event;
+    scrubSelection.flush();
+    focusVisible(true);
   });
   required<HTMLSelectElement>("#page-a").addEventListener("change", (event) => {
     pageA = Number((event.target as HTMLSelectElement).value);
@@ -236,6 +266,7 @@ function bindControls() {
     draggingWipe = false;
   });
   window.addEventListener("keydown", (event) => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
     if (event.key === "ArrowLeft") {
       selectRelative(1);
     } else if (event.key === "ArrowRight") {
@@ -262,9 +293,7 @@ function connectEvents() {
     if (!revision) return;
     revision.render = payload.status;
     updateRenderedRevision(revision);
-    if (payload.status.phase === "ready") {
-      queueNeighbors();
-    }
+    if (payload.status.phase === "ready") preloadNeighborPages();
   });
   events.onerror = () => {
     document.body.dataset.connection = "lost";
@@ -320,11 +349,17 @@ function updateRenderedRevision(revision: Revision) {
   }
 
   const previewed = session.revisions[previewedB];
+  const index = revisionIndex(revision.key);
+  const finalPhase = ["ready", "entrypoint_missing", "error"].includes(revision.render?.phase ?? "");
+  if (index === selectedB && finalPhase) {
+    void previewRevision(index);
+    return;
+  }
   const comparisonChanged =
-    revisionIndex(revision.key) === previewedB ||
-    revisionIndex(revision.key) === pinnedA ||
+    index === previewedB ||
+    index === pinnedA ||
     previewed.parent_ids[0] === revision.commit_id;
-  if (comparisonChanged) updateComparison();
+  if (comparisonChanged && finalPhase) updateComparison();
 }
 
 function patchHistoryRevision(revision: Revision) {
@@ -348,6 +383,12 @@ function patchHistoryRevision(revision: Revision) {
         treeMetadata.textContent = `${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}`;
       }
     });
+  root
+    .querySelectorAll<HTMLElement>(`[data-ready-key="${revision.key}"]`)
+    .forEach((segment) => {
+      segment.dataset.phase = revision.render?.phase ?? "idle";
+      segment.title = `${revision.subject || "(no description)"} · ${phaseLabel(revision.render)}`;
+    });
 }
 
 function updateComparison() {
@@ -363,7 +404,7 @@ function patchPinnedSelection(previous: number, current: number) {
   patchSelectionClass(current, "pinned", true);
 }
 
-function patchSelectedRevision(previous: number, current: number) {
+function patchSelectedRevision(previous: number, current: number, recenter: boolean) {
   patchSelectionClass(previous, "selected", false);
   patchSelectionClass(current, "selected", true);
   root.querySelectorAll<HTMLElement>(`[data-index="${previous}"]`).forEach((element) => {
@@ -372,6 +413,7 @@ function patchSelectedRevision(previous: number, current: number) {
   root.querySelectorAll<HTMLElement>(`[data-index="${current}"]`).forEach((element) => {
     element.setAttribute("aria-selected", "true");
   });
+  if (!recenter) return;
   const selected = root.querySelector<HTMLElement>(`[data-index="${current}"]`);
   if (selected && historyMode === "full-tree") {
     const tree = required<HTMLElement>("#tree");
@@ -558,17 +600,43 @@ function renderTree(tree: HTMLElement) {
   }
 }
 
-function renderRevisionScrubber() {
+function renderRevisionScrubber(syncControl = true) {
   const keys = [...visibleHistoryKeys()].reverse();
   const slider = required<HTMLInputElement>("#revision-slider");
   const selectedKey = session.revisions[selectedB].key;
   const position = Math.max(0, keys.indexOf(selectedKey));
   slider.max = String(Math.max(0, keys.length - 1));
-  slider.value = String(position);
+  if (syncControl) slider.value = String(position);
   const revision = keys[position] ? revisionByKey(keys[position]) : undefined;
   required<HTMLOutputElement>("#revision-position").textContent = revision
     ? `${position + 1} / ${keys.length} · ${shortDate(revision.committed_at)} · ${revision.subject || "(no description)"}`
     : "No revision";
+  renderReadinessRail(keys);
+}
+
+function renderReadinessRail(keys: string[]) {
+  const rail = required<HTMLElement>("#readiness-rail");
+  const identity = keys.join("\0");
+  if (rail.dataset.keys !== identity) {
+    rail.dataset.keys = identity;
+    rail.innerHTML = keys
+      .map((key) => {
+        const revision = revisionByKey(key);
+        return `<span
+          data-ready-key="${revision.key}"
+          data-phase="${revision.render?.phase ?? "idle"}"
+          title="${escapeHtml(`${revision.subject || "(no description)"} · ${phaseLabel(revision.render)}`)}"
+        ></span>`;
+      })
+      .join("");
+  }
+  const selectedKey = session.revisions[selectedB].key;
+  rail.querySelectorAll<HTMLElement>("[data-ready-key]").forEach((segment) => {
+    const key = segment.dataset.readyKey;
+    const revision = key ? revisionByKey(key) : undefined;
+    segment.dataset.phase = revision?.render?.phase ?? "idle";
+    segment.classList.toggle("selected", key === selectedKey);
+  });
 }
 
 function renderPageSelectors() {
@@ -615,54 +683,108 @@ function renderStage() {
   const left = pageUrl(leftRevision.render, pageA);
   const right = pageUrl(rightRevision.render, pageB);
 
+  ensureStageStructure(stage);
+  if (mode === "heatmap") {
+    const comparison = `${left ?? "missing"}\0${right ?? "missing"}`;
+    if (left && right && stage.dataset.comparison !== comparison) {
+      stage.dataset.comparison = comparison;
+      const label = required<HTMLElement>("#heatmap-label");
+      label.textContent = "Calculating visual difference…";
+      void buildHeatmap(left, right);
+    }
+    return;
+  }
+
+  patchPageSlot(stage.querySelector<HTMLElement>('[data-page-slot="a"]'), leftRevision, left, "A");
+  patchPageSlot(stage.querySelector<HTMLElement>('[data-page-slot="b"]'), rightRevision, right, "B");
+  stage.querySelector<HTMLElement>(".stack-pages")?.classList.toggle("show-a", blinkHeld);
+  stage.querySelector<HTMLElement>(".stack-pages")?.classList.toggle("show-b", !blinkHeld);
+  const same = stage.querySelector<HTMLElement>(".same-output");
+  if (same) same.hidden = !outputMatchesFirstParent(rightRevision);
+}
+
+function ensureStageStructure(stage: HTMLElement) {
+  if (stage.dataset.mode === mode) return;
+  stage.dataset.mode = mode;
+  stage.dataset.comparison = "";
   if (mode === "single") {
-    const same = outputMatchesFirstParent(rightRevision);
     stage.innerHTML = `
       <div class="single-page">
-        ${pageOrStatus(rightRevision, right, "B")}
-        ${same ? `<span class="same-output">Same rendered output as first parent</span>` : ""}
+        ${pageSlot("b")}
+        <span class="same-output" hidden>Same rendered output as first parent</span>
       </div>
     `;
-    return;
-  }
-  if (!left || !right) {
-    stage.innerHTML = `
-      <div class="split-pages">
-        ${pageOrStatus(leftRevision, left, "A")}
-        ${pageOrStatus(rightRevision, right, "B")}
-      </div>
-    `;
-    return;
-  }
-  if (mode === "side") {
-    stage.innerHTML = `<div class="split-pages">${pageImage(left, "Revision A")}${pageImage(right, "Revision B")}</div>`;
+  } else if (mode === "side") {
+    stage.innerHTML = `<div class="split-pages">${pageSlot("a")}${pageSlot("b")}</div>`;
   } else if (mode === "blink") {
     stage.innerHTML = `
-      <div class="stack-pages ${blinkHeld ? "show-a" : "show-b"}">
-        ${pageImage(left, "Revision A")}
-        ${pageImage(right, "Revision B")}
+      <div class="stack-pages show-b">
+        ${pageSlot("a")}
+        ${pageSlot("b")}
         <span class="blink-instruction">Hold space or press document for A</span>
       </div>
     `;
   } else if (mode === "opacity") {
     stage.innerHTML = `
       <div class="stack-pages">
-        ${pageImage(left, "Revision A")}
-        <div class="overlay-page mix-page">${pageImage(right, "Revision B")}</div>
+        ${pageSlot("a")}
+        <div class="overlay-page mix-page">${pageSlot("b")}</div>
       </div>
     `;
   } else if (mode === "wipe") {
     stage.innerHTML = `
       <div class="stack-pages wipe-pages">
-        ${pageImage(left, "Revision A")}
-        <div class="overlay-page wipe">${pageImage(right, "Revision B")}</div>
+        ${pageSlot("a")}
+        <div class="overlay-page wipe">${pageSlot("b")}</div>
         <span class="wipe-line" aria-hidden="true"></span>
         <span class="wipe-handle" aria-hidden="true">A&nbsp;│&nbsp;B</span>
       </div>
     `;
   } else {
-    stage.innerHTML = `<div class="heatmap"><canvas id="heatmap"></canvas><p id="heatmap-label">Calculating visual difference…</p></div>`;
-    void buildHeatmap(left, right);
+    stage.innerHTML = `<div class="heatmap"><canvas id="heatmap"></canvas><p id="heatmap-label">Waiting for both revisions…</p></div>`;
+  }
+}
+
+function pageSlot(key: "a" | "b"): string {
+  const label = key.toUpperCase();
+  return `
+    <div class="page-slot" data-page-slot="${key}">
+      <img class="document-page" alt="Revision ${label}" draggable="false" decoding="async" hidden />
+      <div class="render-status idle">
+        <span class="status-letter">${label}</span>
+        <strong>Not rendered</strong>
+        <p>Select this revision to render it.</p>
+      </div>
+    </div>
+  `;
+}
+
+function patchPageSlot(
+  slot: HTMLElement | null,
+  revision: Revision,
+  url: string | null,
+  label: "A" | "B",
+) {
+  if (!slot) return;
+  const image = slot.querySelector<HTMLImageElement>("img");
+  const status = slot.querySelector<HTMLElement>(".render-status");
+  if (!image || !status) return;
+  if (url) {
+    if (image.getAttribute("src") !== url) image.src = url;
+    image.hidden = false;
+    status.hidden = true;
+    return;
+  }
+  image.hidden = true;
+  status.hidden = false;
+  status.className = `render-status ${revision.render?.phase ?? "idle"}`;
+  const strong = status.querySelector<HTMLElement>("strong");
+  const message = status.querySelector<HTMLElement>("p");
+  if (strong) strong.textContent = phaseLabel(revision.render);
+  if (message) {
+    message.textContent =
+      revision.render?.message ??
+      (revision.render?.phase ? "Preparing this revision…" : `Select revision ${label} to render it.`);
   }
 }
 
@@ -757,49 +879,91 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
   );
 }
 
-function selectRevision(index: number, deferPreview = false) {
+function selectRevision(index: number, recenter = true) {
   if (index < 0 || index >= session.revisions.length) return;
   const previous = selectedB;
   selectedB = index;
-  patchSelectedRevision(previous, selectedB);
-  renderRevisionScrubber();
-  queueVisible();
-  if (deferPreview) {
-    window.clearTimeout(previewTimer);
-    previewTimer = window.setTimeout(() => {
-      if (selectedB === index) commitPreview(index, true);
-    }, 90);
-  } else {
-    commitPreview(index, false);
-  }
+  patchSelectedRevision(previous, selectedB, recenter);
+  renderRevisionScrubber(recenter);
+  updatePreviewPending();
+  focusVisible();
+  void previewRevision(index);
 }
 
-function commitPreview(index: number, preserveScrubber: boolean) {
-  window.clearTimeout(previewTimer);
-  previewedB = index;
-  const pages = session.revisions[index].render?.pages.length ?? 1;
-  pageB = Math.min(pageB, pages - 1);
-  if (preserveScrubber) {
-    preserveScrubberPosition(updateComparison);
-  } else {
+async function previewRevision(index: number) {
+  const revision = session.revisions[index];
+  const finalPhase = ["ready", "entrypoint_missing", "error"].includes(revision.render?.phase ?? "");
+  if (!finalPhase) return;
+  if (index === previewedB) {
     updateComparison();
+    updatePreviewPending();
+    return;
+  }
+
+  const generation = ++previewGeneration;
+  const pages = revision.render?.pages.length ?? 1;
+  const nextPage = Math.min(pageB, pages - 1);
+  const nextUrl = pageUrl(revision.render, nextPage);
+  if (nextUrl) {
+    try {
+      await preloadImage(nextUrl);
+    } catch {
+      // The normal stage error handling remains the source of truth.
+    }
+  }
+  if (generation !== previewGeneration || selectedB !== index) return;
+
+  previewedB = index;
+  pageB = nextPage;
+  updateComparison();
+  updatePreviewPending();
+  preloadNeighborPages();
+}
+
+function preloadImage(url: string): Promise<void> {
+  const cached = imagePreloads.get(url);
+  if (cached) {
+    imagePreloads.delete(url);
+    imagePreloads.set(url, cached);
+    return cached;
+  }
+  const image = new Image();
+  image.decoding = "async";
+  const pending = new Promise<void>((resolve, reject) => {
+    image.addEventListener("load", () => {
+      void image.decode().then(resolve, resolve);
+    });
+    image.addEventListener("error", () => reject(new Error(`Could not preload ${url}`)));
+    image.src = url;
+  }).catch((error) => {
+    imagePreloads.delete(url);
+    throw error;
+  });
+  imagePreloads.set(url, pending);
+  while (imagePreloads.size > 12) {
+    const oldest = imagePreloads.keys().next().value;
+    if (oldest === undefined) break;
+    imagePreloads.delete(oldest);
+  }
+  return pending;
+}
+
+function preloadNeighborPages() {
+  const keys = activeHistoryKeys();
+  const current = keys.indexOf(session.revisions[selectedB].key);
+  for (const offset of [-2, -1, 1, 2]) {
+    const key = keys[current + offset];
+    if (!key) continue;
+    const url = pageUrl(revisionByKey(key).render, pageB);
+    if (url) void preloadImage(url).catch(() => undefined);
   }
 }
 
-function preserveScrubberPosition(update: () => void) {
-  const slider = required<HTMLInputElement>("#revision-slider");
-  const viewportPosition = slider.getBoundingClientRect().top;
-  const restore = () => {
-    const movement = slider.getBoundingClientRect().top - viewportPosition;
-    if (Math.abs(movement) > 0.5) window.scrollBy(0, movement);
-  };
-  update();
-  restore();
-  required<HTMLElement>("#stage")
-    .querySelectorAll<HTMLImageElement>("img")
-    .forEach((image) => {
-      if (!image.complete) image.addEventListener("load", restore, { once: true });
-    });
+function updatePreviewPending() {
+  const stage = required<HTMLElement>("#stage");
+  const pending = selectedB !== previewedB;
+  stage.dataset.previewPending = String(pending);
+  stage.setAttribute("aria-busy", String(pending));
 }
 
 function selectRelative(offset: number) {
@@ -810,58 +974,20 @@ function selectRelative(offset: number) {
   selectRevision(revisionIndex(keys[next]));
 }
 
-function queueVisible(immediate = false) {
-  window.clearTimeout(selectionTimer);
-  const queue = () => {
-    void queueRevision(session.revisions[selectedB]);
-    void queueRevision(session.revisions[pinnedA]);
+function focusVisible(immediate = false) {
+  const focus = {
+    revisionKey: session.revisions[selectedB].key,
+    pinnedRevisionKey: session.revisions[pinnedA].key,
+    historyMode,
+    generation: ++focusGeneration,
   };
-  if (immediate) {
-    queue();
-  } else {
-    selectionTimer = window.setTimeout(queue, 120);
-  }
-}
-
-function queueNeighbors() {
-  const keys = activeHistoryKeys();
-  const current = keys.indexOf(session.revisions[selectedB].key);
-  for (const position of [current - 1, current + 1]) {
-    if (position >= 0 && position < keys.length) void queueRevision(revisionByKey(keys[position]));
-  }
-}
-
-async function queueRevision(revision: Revision | undefined) {
-  if (!revision || ["queued", "materializing", "compiling", "ready"].includes(revision.render?.phase ?? "")) {
-    return;
-  }
-  await fetch(`${tokenBase}/api/render`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ revision_key: revision.key }),
-  });
+  focusRequests.schedule(focus);
+  if (immediate) focusRequests.flush();
 }
 
 function pageUrl(status: RenderStatus | undefined, pageIndex: number): string | null {
   if (status?.phase !== "ready" || !status.render_id || !status.pages[pageIndex]) return null;
   return `${tokenBase}/assets/${status.render_id}/page/${status.pages[pageIndex].number}`;
-}
-
-function pageOrStatus(revision: Revision, url: string | null, label: string): string {
-  if (url) return pageImage(url, `Revision ${label}`);
-  const phase = revision.render?.phase;
-  const message = revision.render?.message;
-  return `
-    <div class="render-status ${phase ?? "idle"}">
-      <span class="status-letter">${label}</span>
-      <strong>${phaseLabel(revision.render)}</strong>
-      <p>${escapeHtml(message ?? (phase ? "Preparing this revision…" : "Select this revision to render it."))}</p>
-    </div>
-  `;
-}
-
-function pageImage(url: string, alt: string): string {
-  return `<img class="document-page" src="${url}" alt="${alt}" draggable="false" decoding="async" />`;
 }
 
 function outputMatchesFirstParent(revision: Revision): boolean {

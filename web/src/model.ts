@@ -52,7 +52,7 @@ export interface Session {
     inputs: Record<string, string>;
     package_path?: string;
     package_cache_path?: string;
-    typst: string;
+    typst?: string;
   };
   compiler: string;
   history: {

@@ -42,7 +42,7 @@ pub struct ResolveRequest {
     pub inputs: Vec<String>,
     pub package_path: Option<PathBuf>,
     pub package_cache_path: Option<PathBuf>,
-    pub typst: PathBuf,
+    pub typst: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -55,7 +55,8 @@ pub struct ResolvedTarget {
     pub inputs: BTreeMap<String, String>,
     pub package_path: Option<PathBuf>,
     pub package_cache_path: Option<PathBuf>,
-    pub typst: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typst: Option<PathBuf>,
 }
 
 fn default_root() -> PathBuf {
@@ -321,7 +322,7 @@ inputs = { variant = "base" }
                 inputs: vec!["variant=compact".to_owned()],
                 package_path: None,
                 package_cache_path: None,
-                typst: PathBuf::from("typst"),
+                typst: Some(PathBuf::from("typst")),
             },
         )?;
         assert_eq!(target.name.as_deref(), Some("resume"));

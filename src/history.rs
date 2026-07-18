@@ -96,6 +96,10 @@ struct JjSignature {
 }
 
 impl HistoryRepository {
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
     pub fn discover(start: &Path, preference: VcsPreference) -> Result<Self> {
         let start = if start.is_file() {
             start

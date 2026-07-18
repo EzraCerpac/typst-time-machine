@@ -1,7 +1,7 @@
 # Typst Time Machine
 
 Typst Time Machine turns Git or Jujutsu history into a visual document timeline.
-It renders immutable revisions with the official Typst compiler, then opens a
+It renders immutable revisions with the official Typst engine, then opens a
 local browser where revisions can be scrubbed, pinned, blinked, wiped, overlaid,
 or compared as a pixel heatmap.
 
@@ -14,13 +14,13 @@ object.
 
 ## Requirements
 
-- Typst 0.15 or newer
 - Git
 - Jujutsu when opening a JJ repository
 - macOS or Linux
 
-The released `ttm` binary contains the browser frontend. Bun is needed only when
-building the frontend from source.
+The released `ttm` binary contains Typst 0.15.0 and the browser frontend. Bun is
+needed only when building the frontend from source. An external Typst 0.15+
+binary is optional.
 
 ## Install
 
@@ -57,7 +57,7 @@ ttm view <entry.typ>
   --font-path <dir>
   --package-path <dir>
   --package-cache-path <dir>
-  --typst <binary>
+  --typst <binary>                  # opt out of the bundled incremental engine
   --no-open
 ```
 
@@ -65,13 +65,13 @@ ttm view <entry.typ>
 one operation and starts at `@-`, excluding the working-copy commit and
 unsnapshotted filesystem state.
 
-The viewer initially renders the latest revision and its parent. Other revisions
-render only when selected or immediately neighboring the selection, so a cold
-click is not buried behind bulk background work. The revision scrubber travels
-through the loaded history. The history dock switches between the horizontal
-first-parent story and a vertically scrollable reachable revision tree. Arrow
-keys scrub the active view. Space temporarily shows revision A in Blink mode,
-and Wipe mode can be dragged directly on the document.
+The viewer renders the selected pair first, buffers nearby revisions in the
+current scrub direction, then warms the remaining history in the background.
+The readiness strip below the slider shows that buffer. The history dock
+switches between the horizontal first-parent story and a vertically scrollable
+reachable revision tree. Arrow keys scrub the active view. Space temporarily
+shows revision A in Blink mode, and Wipe mode can be dragged directly on the
+document.
 
 Inspect or clear cached render artifacts:
 
@@ -112,7 +112,8 @@ collapsed inside the viewer.
   repository operation is created.
 - JJ commands run against one pinned operation. Full commit IDs are identities;
   change IDs are display metadata.
-- Git objects are exported through a temporary index into isolated directories.
+- The bundled engine reads immutable Git objects on demand without exporting a
+  checkout. Explicit `--typst` uses the isolated temporary-index fallback.
 - Historical symlinks resolving outside the snapshot are rejected.
 - Missing entrypoints and compiler failures affect one revision, not the session.
 - Partial-clone, LFS, and submodule data is never fetched automatically.
@@ -135,7 +136,8 @@ scripts/check
 Source layout:
 
 - `src/history.rs`: Git/JJ discovery, operation pinning, immutable extraction
-- `src/render.rs`: Typst compiler, content-addressed cache, render scheduler
+- `src/engine.rs`: persistent Typst world and immutable Git-object file loader
+- `src/render.rs`: worker lifecycle, content-addressed cache, render scheduler
 - `src/server.rs`: capability-scoped loopback API and embedded frontend
 - `web/src`: framework-free TypeScript comparison interface
 
@@ -146,7 +148,7 @@ version-coupled preview protocol.
 
 ## Releasing
 
-CI checks Linux and macOS, verifies Rust 1.85, and builds the publishable crate.
+CI checks Linux and macOS, verifies Rust 1.92, and builds the publishable crate.
 Before tagging a release:
 
 ```sh

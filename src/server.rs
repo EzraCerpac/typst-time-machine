@@ -15,14 +15,15 @@ use axum::{
     },
     routing::{get, post},
 };
+use futures_util::StreamExt as FuturesStreamExt;
 use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{
     history::{History, RepoInfo, Revision},
-    render::{RenderManager, RenderStatus},
+    render::{FocusHistoryMode, RenderManager, RenderStatus},
 };
 
 #[derive(Clone)]
@@ -62,6 +63,14 @@ struct RenderRequest {
     revision_key: String,
 }
 
+#[derive(Deserialize)]
+struct FocusRequest {
+    revision_key: String,
+    pinned_revision_key: String,
+    history_mode: FocusHistoryMode,
+    generation: u64,
+}
+
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
@@ -79,6 +88,13 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
             message: message.into(),
         }
     }
@@ -125,6 +141,8 @@ pub async fn serve(
         history,
         render,
     };
+    let shutdown = state.render.shutdown_token();
+    let render = Arc::clone(&state.render);
 
     let app = Router::new()
         .route("/{token}/", get(index))
@@ -133,6 +151,7 @@ pub async fn serve(
         .route("/{token}/diff-worker.js", get(diff_worker))
         .route("/{token}/api/session", get(session))
         .route("/{token}/api/render", post(queue_render))
+        .route("/{token}/api/focus", post(focus_render))
         .route("/{token}/api/events", get(events))
         .route(
             "/{token}/assets/{render_id}/page/{page_number}",
@@ -145,14 +164,18 @@ pub async fn serve(
     if open_browser {
         open::that(&url).context("open browser")?;
     }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("run local viewer")
+    let result = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown))
+        .await;
+    render.shutdown().await;
+    result.context("run local viewer")
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn shutdown_signal(shutdown: tokio_util::sync::CancellationToken) {
+    if tokio::signal::ctrl_c().await.is_ok() {
+        eprintln!("Shutting down…");
+        shutdown.cancel();
+    }
 }
 
 async fn index(
@@ -234,6 +257,9 @@ async fn queue_render(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     check_token(&token, &state)?;
     check_origin(&headers, &state)?;
+    if state.render.shutdown_token().is_cancelled() {
+        return Err(ApiError::unavailable("viewer is shutting down"));
+    }
     state
         .render
         .queue(&request.revision_key)
@@ -242,18 +268,49 @@ async fn queue_render(
     Ok(Json(serde_json::json!({ "queued": request.revision_key })))
 }
 
+async fn focus_render(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<FocusRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    check_token(&token, &state)?;
+    check_origin(&headers, &state)?;
+    if state.render.shutdown_token().is_cancelled() {
+        return Err(ApiError::unavailable("viewer is shutting down"));
+    }
+    state
+        .render
+        .focus(
+            &request.revision_key,
+            &request.pinned_revision_key,
+            request.history_mode,
+            request.generation,
+        )
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "focused": request.revision_key,
+        "generation": request.generation
+    })))
+}
+
 async fn events(
     Path(token): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     check_token(&token, &state)?;
-    let stream =
-        BroadcastStream::new(state.render.subscribe()).filter_map(|message| match message {
+    let shutdown = state.render.shutdown_token();
+    let stream = tokio_stream::StreamExt::filter_map(
+        BroadcastStream::new(state.render.subscribe()),
+        |message| match message {
             Ok(event) => serde_json::to_string(&event)
                 .ok()
                 .map(|json| Ok(Event::default().event("render").data(json))),
             Err(_) => None,
-        });
+        },
+    );
+    let stream = FuturesStreamExt::take_until(stream, shutdown.cancelled_owned());
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
