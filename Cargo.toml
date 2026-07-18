@@ -15,7 +15,7 @@ include = [
   "/web/styles.css",
   "/web/dist/app.js",
   "/web/dist/diff-worker.js",
-  "/docs/assets/typst-time-machine-demo.png",
+  "/docs/assets/typst-time-machine-collage.jpg",
   "/README.md",
   "/LICENSE",
 ]

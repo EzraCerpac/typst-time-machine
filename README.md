@@ -5,10 +5,10 @@ It renders immutable revisions with the official Typst compiler, then opens a
 local browser where revisions can be scrubbed, pinned, blinked, wiped, overlaid,
 or compared as a pixel heatmap.
 
-![Typst Time Machine comparing two revisions with a wipe and full JJ history tree](docs/assets/typst-time-machine-demo.png)
+![Typst Time Machine comparing a one-page Typst visual report with a Fletcher graph, feature bullets, and a history illustration](docs/assets/typst-time-machine-collage.jpg)
 
-Pin A, scrub B, and drag the wipe through a JJ-backed Typst history. Git uses
-the same workflow.
+Pin A, scrub B, compare pages with a wipe or pixel heatmap, and switch between
+the first-parent story and full revision tree. Git uses the same workflow.
 
 ## Why
 
