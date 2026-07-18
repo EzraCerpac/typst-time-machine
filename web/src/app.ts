@@ -15,9 +15,23 @@ type CompareMode = "single" | "side" | "blink" | "opacity" | "wipe" | "heatmap";
 const tokenBase = location.pathname.replace(/\/$/, "");
 const worker = new Worker(`${tokenBase}/diff-worker.js`, { type: "module" });
 const root = required<HTMLElement>("#app");
+const fullDateFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+const shortDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  year: "2-digit",
+});
 
 let session: Session;
+let revisionByKeyIndex = new Map<string, Revision>();
+let revisionIndexByKey = new Map<string, number>();
+let revisionByCommit = new Map<string, Revision>();
+let firstParentPosition = new Map<string, number>();
 let selectedB = 0;
+let previewedB = 0;
 let pinnedA = 1;
 let pageA = 0;
 let pageB = 0;
@@ -29,6 +43,12 @@ let blinkHeld = false;
 let heatmapGeneration = 0;
 let draggingWipe = false;
 let selectionTimer: number | undefined;
+let previewTimer: number | undefined;
+
+worker.addEventListener("error", (event) => {
+  const label = document.querySelector<HTMLElement>("#heatmap-label");
+  if (label) label.textContent = `Could not calculate heatmap: ${event.message}`;
+});
 
 void boot();
 
@@ -37,7 +57,12 @@ async function boot() {
   const response = await fetch(`${tokenBase}/api/session`);
   if (!response.ok) throw new Error("Could not load Typst history.");
   session = (await response.json()) as Session;
+  revisionByKeyIndex = new Map(session.revisions.map((revision) => [revision.key, revision]));
+  revisionIndexByKey = new Map(session.revisions.map((revision, index) => [revision.key, index]));
+  revisionByCommit = new Map(session.revisions.map((revision) => [revision.commit_id, revision]));
+  firstParentPosition = new Map(session.history.first_parent_keys.map((key, index) => [key, index]));
   selectedB = revisionIndex(session.history.first_parent_keys[0]);
+  previewedB = selectedB;
   pinnedA = revisionIndex(session.history.first_parent_keys[1] ?? session.history.first_parent_keys[0]);
   renderShell();
   connectEvents();
@@ -127,7 +152,9 @@ function bindControls() {
   root.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       mode = button.dataset.mode as CompareMode;
-      updateAll();
+      renderStage();
+      updateModeControls();
+      applyMix();
     });
   });
   required<HTMLInputElement>("#mix").addEventListener("input", (event) => {
@@ -137,9 +164,14 @@ function bindControls() {
     setMix(Number((event.target as HTMLInputElement).value));
   });
   required<HTMLButtonElement>("#pin-a").addEventListener("click", () => {
+    window.clearTimeout(previewTimer);
+    previewedB = selectedB;
+    pageB = Math.min(pageB, (session.revisions[previewedB].render?.pages.length ?? 1) - 1);
+    const previous = pinnedA;
     pinnedA = selectedB;
     pageA = pageB;
-    updateAll();
+    patchPinnedSelection(previous, pinnedA);
+    updateComparison();
     queueVisible(true);
   });
   required<HTMLInputElement>("#collapse").addEventListener("change", (event) => {
@@ -155,6 +187,8 @@ function bindControls() {
         selectedB = revisionIndex(keys[0]);
         pageB = 0;
       }
+      window.clearTimeout(previewTimer);
+      previewedB = selectedB;
       updateAll();
       queueVisible();
     });
@@ -162,7 +196,7 @@ function bindControls() {
   required<HTMLInputElement>("#revision-slider").addEventListener("input", (event) => {
     const keys = [...visibleHistoryKeys()].reverse();
     const key = keys[Number((event.target as HTMLInputElement).value)];
-    if (key) selectRevision(revisionIndex(key));
+    if (key) selectRevision(revisionIndex(key), true);
   });
   required<HTMLSelectElement>("#page-a").addEventListener("change", (event) => {
     pageA = Number((event.target as HTMLSelectElement).value);
@@ -224,10 +258,10 @@ function connectEvents() {
   const events = new EventSource(`${tokenBase}/api/events`);
   events.addEventListener("render", (event) => {
     const payload = JSON.parse((event as MessageEvent).data) as { status: RenderStatus };
-    const revision = session.revisions.find((item) => item.key === payload.status.revision_key);
+    const revision = revisionByKeyIndex.get(payload.status.revision_key);
     if (!revision) return;
     revision.render = payload.status;
-    updateAll();
+    updateRenderedRevision(revision);
     if (payload.status.phase === "ready") {
       queueNeighbors();
     }
@@ -245,6 +279,11 @@ function updateAll() {
   renderPageRail();
   renderStage();
   applyMix();
+  updateModeControls();
+  updateHistoryControls();
+}
+
+function updateModeControls() {
   root.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
   });
@@ -253,6 +292,9 @@ function updateAll() {
   mixControl.dataset.visible = String(mixVisible);
   mixControl.hidden = !mixVisible;
   required<HTMLElement>("#mix-label").textContent = mode === "opacity" ? "Blend" : "Wipe";
+}
+
+function updateHistoryControls() {
   root.querySelectorAll<HTMLButtonElement>("[data-history-mode]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.historyMode === historyMode));
   });
@@ -266,16 +308,93 @@ function updateAll() {
       : "Newest at top, with branches and merges at left.";
 }
 
+function updateRenderedRevision(revision: Revision) {
+  patchHistoryRevision(revision);
+  const position = firstParentPosition.get(revision.key);
+  if (position != null && position > 0) {
+    patchHistoryRevision(revisionByKey(session.history.first_parent_keys[position - 1]));
+  }
+  if (collapseUnchanged && historyMode === "first-parent" && revision.render?.phase === "ready") {
+    renderTimeline();
+    renderRevisionScrubber();
+  }
+
+  const previewed = session.revisions[previewedB];
+  const comparisonChanged =
+    revisionIndex(revision.key) === previewedB ||
+    revisionIndex(revision.key) === pinnedA ||
+    previewed.parent_ids[0] === revision.commit_id;
+  if (comparisonChanged) updateComparison();
+}
+
+function patchHistoryRevision(revision: Revision) {
+  root
+    .querySelectorAll<HTMLElement>(`[data-revision-key="${revision.key}"]`)
+    .forEach((element) => {
+      element.dataset.phase = revision.render?.phase ?? "idle";
+      if (element.classList.contains("frame")) {
+        const position = firstParentPosition.get(revision.key);
+        const olderKey = position == null ? undefined : session.history.first_parent_keys[position + 1];
+        const unchanged = outputsMatch(revision.render, olderKey ? revisionByKey(olderKey).render : undefined);
+        const metadata = element.querySelector<HTMLElement>(".frame-meta");
+        if (metadata) {
+          metadata.textContent = `${shortId(revision.commit_id)} · ${
+            unchanged ? "same output" : phaseLabel(revision.render)
+          }`;
+        }
+      }
+      const treeMetadata = element.querySelector<HTMLElement>(".tree-meta");
+      if (treeMetadata) {
+        treeMetadata.textContent = `${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}`;
+      }
+    });
+}
+
+function updateComparison() {
+  renderRevisionNotes();
+  renderPageSelectors();
+  renderPageRail();
+  renderStage();
+  applyMix();
+}
+
+function patchPinnedSelection(previous: number, current: number) {
+  patchSelectionClass(previous, "pinned", false);
+  patchSelectionClass(current, "pinned", true);
+}
+
+function patchSelectedRevision(previous: number, current: number) {
+  patchSelectionClass(previous, "selected", false);
+  patchSelectionClass(current, "selected", true);
+  root.querySelectorAll<HTMLElement>(`[data-index="${previous}"]`).forEach((element) => {
+    element.setAttribute("aria-selected", "false");
+  });
+  root.querySelectorAll<HTMLElement>(`[data-index="${current}"]`).forEach((element) => {
+    element.setAttribute("aria-selected", "true");
+  });
+  const selected = root.querySelector<HTMLElement>(`[data-index="${current}"]`);
+  if (selected && historyMode === "full-tree") {
+    const tree = required<HTMLElement>("#tree");
+    tree.scrollTop = Math.max(0, selected.offsetTop - tree.clientHeight / 2 + selected.clientHeight / 2);
+  } else if (selected) {
+    const film = required<HTMLElement>("#film");
+    film.scrollLeft = Math.max(0, selected.offsetLeft - film.clientWidth / 2 + selected.clientWidth / 2);
+  }
+}
+
+function patchSelectionClass(index: number, className: string, enabled: boolean) {
+  root.querySelectorAll<HTMLElement>(`[data-index="${index}"]`).forEach((element) => {
+    element.classList.toggle(className, enabled);
+  });
+}
+
 function renderRevisionNotes() {
-  renderRevisionNote(required("#revision-a"), session.revisions[pinnedA], "A", pinnedA === selectedB);
-  renderRevisionNote(required("#revision-b"), session.revisions[selectedB], "B", false);
+  renderRevisionNote(required("#revision-a"), session.revisions[pinnedA], "A", pinnedA === previewedB);
+  renderRevisionNote(required("#revision-b"), session.revisions[previewedB], "B", false);
 }
 
 function renderRevisionNote(container: HTMLElement, revision: Revision, letter: string, same: boolean) {
-  const date = new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(revision.committed_at));
+  const date = fullDateFormatter.format(new Date(revision.committed_at));
   container.innerHTML = `
     <div class="revision-letter">${letter}</div>
     <p class="revision-date">${date}</p>
@@ -315,7 +434,7 @@ function renderTimeline() {
   film.innerHTML = visible
     .map(({ revision, index }) => {
       const phase = revision.render?.phase ?? "idle";
-      const sequenceIndex = session.history.first_parent_keys.indexOf(revision.key);
+      const sequenceIndex = firstParentPosition.get(revision.key) ?? -1;
       const olderKey = session.history.first_parent_keys[sequenceIndex + 1];
       const older = olderKey ? revisionByKey(olderKey) : undefined;
       const unchanged = outputsMatch(revision.render, older?.render);
@@ -326,6 +445,7 @@ function renderTimeline() {
           role="option"
           aria-selected="${index === selectedB}"
           data-index="${index}"
+          data-revision-key="${revision.key}"
           data-phase="${phase}"
           title="${escapeHtml(revision.changed_paths.join("\n"))}"
         >
@@ -407,6 +527,7 @@ function renderTree(tree: HTMLElement) {
           role="option"
           aria-selected="${index === selectedB}"
           data-index="${index}"
+          data-revision-key="${revision.key}"
           data-phase="${phase}"
           title="${escapeHtml(revision.changed_paths.join("\n"))}"
         >
@@ -452,7 +573,7 @@ function renderRevisionScrubber() {
 
 function renderPageSelectors() {
   fillPageSelect(required("#page-a"), session.revisions[pinnedA].render, pageA);
-  fillPageSelect(required("#page-b"), session.revisions[selectedB].render, pageB);
+  fillPageSelect(required("#page-b"), session.revisions[previewedB].render, pageB);
 }
 
 function fillPageSelect(select: HTMLSelectElement, status: RenderStatus | undefined, selected: number) {
@@ -471,7 +592,7 @@ function fillPageSelect(select: HTMLSelectElement, status: RenderStatus | undefi
 
 function renderPageRail() {
   const left = session.revisions[pinnedA].render;
-  const right = session.revisions[selectedB].render;
+  const right = session.revisions[previewedB].render;
   const count = Math.max(left?.pages.length ?? 0, right?.pages.length ?? 0);
   const rail = required<HTMLElement>("#page-rail");
   rail.innerHTML = Array.from({ length: count }, (_, index) => {
@@ -482,7 +603,7 @@ function renderPageRail() {
     button.addEventListener("click", () => {
       pageA = Math.min(Number(button.dataset.page), Math.max(0, (left?.pages.length ?? 1) - 1));
       pageB = Math.min(Number(button.dataset.page), Math.max(0, (right?.pages.length ?? 1) - 1));
-      updateAll();
+      updateComparison();
     });
   });
 }
@@ -490,7 +611,7 @@ function renderPageRail() {
 function renderStage() {
   const stage = required<HTMLElement>("#stage");
   const leftRevision = session.revisions[pinnedA];
-  const rightRevision = session.revisions[selectedB];
+  const rightRevision = session.revisions[previewedB];
   const left = pageUrl(leftRevision.render, pageA);
   const right = pageUrl(rightRevision.render, pageB);
 
@@ -579,70 +700,110 @@ function setMixFromPointer(event: PointerEvent) {
 
 async function buildHeatmap(leftUrl: string, rightUrl: string) {
   const generation = ++heatmapGeneration;
-  const [left, right] = await Promise.all([loadImage(leftUrl), loadImage(rightUrl)]);
-  if (generation !== heatmapGeneration || mode !== "heatmap") return;
-  const scale = 1.5;
-  const width = Math.ceil(Math.max(left.naturalWidth, right.naturalWidth) * scale);
-  const height = Math.ceil(Math.max(left.naturalHeight, right.naturalHeight) * scale);
-  const render = (image: HTMLImageElement) => {
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true })!;
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, width, height);
-    context.drawImage(
-      image,
-      Math.round((width - image.naturalWidth * scale) / 2),
-      Math.round((height - image.naturalHeight * scale) / 2),
-      image.naturalWidth * scale,
-      image.naturalHeight * scale,
-    );
-    return context.getImageData(0, 0, width, height);
-  };
-  const leftData = render(left);
-  const rightData = render(right);
+  let left: ImageBitmap;
+  let right: ImageBitmap;
+  try {
+    [left, right] = await Promise.all([loadBitmap(leftUrl), loadBitmap(rightUrl)]);
+  } catch (error) {
+    if (generation === heatmapGeneration && mode === "heatmap") {
+      const label = document.querySelector<HTMLElement>("#heatmap-label");
+      if (label) label.textContent = `Could not calculate heatmap: ${String(error)}`;
+    }
+    return;
+  }
+  if (generation !== heatmapGeneration || mode !== "heatmap") {
+    left.close();
+    right.close();
+    return;
+  }
   worker.onmessage = (event: MessageEvent) => {
-    if (generation !== heatmapGeneration || mode !== "heatmap") return;
     const result = event.data as {
-      output: ArrayBuffer;
+      bitmap: ImageBitmap;
       width: number;
       height: number;
       changed: number;
       total: number;
+      generation: number;
     };
+    if (result.generation !== heatmapGeneration || mode !== "heatmap") {
+      result.bitmap.close();
+      return;
+    }
     const canvas = document.querySelector<HTMLCanvasElement>("#heatmap");
-    if (!canvas) return;
+    if (!canvas) {
+      result.bitmap.close();
+      return;
+    }
     canvas.width = result.width;
     canvas.height = result.height;
-    canvas
-      .getContext("2d")!
-      .putImageData(new ImageData(new Uint8ClampedArray(result.output), result.width, result.height), 0, 0);
+    const bitmapContext = canvas.getContext("bitmaprenderer");
+    if (bitmapContext) {
+      bitmapContext.transferFromImageBitmap(result.bitmap);
+    } else {
+      canvas.getContext("2d")!.drawImage(result.bitmap, 0, 0);
+      result.bitmap.close();
+    }
     const label = document.querySelector<HTMLElement>("#heatmap-label");
     if (label) label.textContent = `${((result.changed / result.total) * 100).toFixed(2)}% pixels differ`;
   };
   worker.postMessage(
     {
-      left: leftData.data.buffer,
-      right: rightData.data.buffer,
-      width,
-      height,
+      left,
+      right,
+      scale: 1.5,
+      generation,
     },
-    [leftData.data.buffer, rightData.data.buffer],
+    [left, right],
   );
 }
 
-function selectRevision(index: number) {
+function selectRevision(index: number, deferPreview = false) {
   if (index < 0 || index >= session.revisions.length) return;
+  const previous = selectedB;
   selectedB = index;
+  patchSelectedRevision(previous, selectedB);
+  renderRevisionScrubber();
+  queueVisible();
+  if (deferPreview) {
+    window.clearTimeout(previewTimer);
+    previewTimer = window.setTimeout(() => {
+      if (selectedB === index) commitPreview(index, true);
+    }, 90);
+  } else {
+    commitPreview(index, false);
+  }
+}
+
+function commitPreview(index: number, preserveScrubber: boolean) {
+  window.clearTimeout(previewTimer);
+  previewedB = index;
   const pages = session.revisions[index].render?.pages.length ?? 1;
   pageB = Math.min(pageB, pages - 1);
-  updateAll();
-  queueVisible();
+  if (preserveScrubber) {
+    preserveScrubberPosition(updateComparison);
+  } else {
+    updateComparison();
+  }
+}
+
+function preserveScrubberPosition(update: () => void) {
+  const slider = required<HTMLInputElement>("#revision-slider");
+  const viewportPosition = slider.getBoundingClientRect().top;
+  const restore = () => {
+    const movement = slider.getBoundingClientRect().top - viewportPosition;
+    if (Math.abs(movement) > 0.5) window.scrollBy(0, movement);
+  };
+  update();
+  restore();
+  required<HTMLElement>("#stage")
+    .querySelectorAll<HTMLImageElement>("img")
+    .forEach((image) => {
+      if (!image.complete) image.addEventListener("load", restore, { once: true });
+    });
 }
 
 function selectRelative(offset: number) {
-  const keys = activeHistoryKeys();
+  const keys = visibleHistoryKeys();
   const current = keys.indexOf(session.revisions[selectedB].key);
   if (current < 0) return;
   const next = Math.min(keys.length - 1, Math.max(0, current + offset));
@@ -700,12 +861,11 @@ function pageOrStatus(revision: Revision, url: string | null, label: string): st
 }
 
 function pageImage(url: string, alt: string): string {
-  return `<img class="document-page" src="${url}" alt="${alt}" draggable="false" />`;
+  return `<img class="document-page" src="${url}" alt="${alt}" draggable="false" decoding="async" />`;
 }
 
 function outputMatchesFirstParent(revision: Revision): boolean {
-  const parentId = revision.parent_ids[0];
-  const parent = session.revisions.find((candidate) => candidate.commit_id === parentId);
+  const parent = revisionByCommit.get(revision.parent_ids[0]);
   return Boolean(parent && outputsMatch(revision.render, parent.render));
 }
 
@@ -729,28 +889,28 @@ function visibleHistoryKeys(): string[] {
 }
 
 function revisionByKey(key: string): Revision {
-  const revision = session.revisions.find((item) => item.key === key);
+  const revision = revisionByKeyIndex.get(key);
   if (!revision) throw new Error(`Unknown revision: ${key}`);
   return revision;
 }
 
 function revisionIndex(key: string): number {
-  return session.revisions.findIndex((revision) => revision.key === key);
+  return revisionIndexByKey.get(key) ?? -1;
 }
 
 function shortDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "2-digit" }).format(
-    new Date(value),
-  );
+  return shortDateFormatter.format(new Date(value));
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Could not load ${url}`));
-    image.src = url;
+async function loadBitmap(url: string): Promise<ImageBitmap> {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const candidate = new Image();
+    candidate.decoding = "async";
+    candidate.onload = () => resolve(candidate);
+    candidate.onerror = () => reject(new Error(`Could not load ${url}`));
+    candidate.src = url;
   });
+  return createImageBitmap(image);
 }
 
 function required<T extends Element = HTMLElement>(selector: string): T {

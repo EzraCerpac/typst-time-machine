@@ -3,7 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
 };
 
 use anyhow::{Context, Result, bail};
@@ -73,6 +73,7 @@ pub struct RenderManager {
     compiler_version: String,
     font_fingerprint: String,
     statuses: RwLock<HashMap<String, RenderStatus>>,
+    artifacts: StdRwLock<HashMap<String, Vec<PageArtifact>>>,
     slots: Semaphore,
     events: broadcast::Sender<RenderEvent>,
 }
@@ -106,6 +107,7 @@ impl RenderManager {
             compiler_version,
             font_fingerprint,
             statuses: RwLock::new(HashMap::new()),
+            artifacts: StdRwLock::new(HashMap::new()),
             slots: Semaphore::new(2),
             events,
         }))
@@ -158,6 +160,34 @@ impl RenderManager {
         let manager = Arc::clone(self);
         let key = revision_key.to_owned();
         tokio::spawn(async move {
+            let cache_manager = Arc::clone(&manager);
+            let cache_key = key.clone();
+            let cached =
+                tokio::task::spawn_blocking(move || cache_manager.cached_revision(&cache_key))
+                    .await;
+            match cached {
+                Ok(Ok(Some(manifest))) => {
+                    manager.set_ready(&key, manifest).await;
+                    return;
+                }
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    manager
+                        .set_phase(&key, RenderPhase::Error, Some(format!("{error:#}")))
+                        .await;
+                    return;
+                }
+                Err(error) => {
+                    manager
+                        .set_phase(
+                            &key,
+                            RenderPhase::Error,
+                            Some(format!("cache task failed: {error}")),
+                        )
+                        .await;
+                    return;
+                }
+            }
             let permit = match manager.slots.acquire().await {
                 Ok(permit) => permit,
                 Err(_) => return,
@@ -172,9 +202,7 @@ impl RenderManager {
             drop(permit);
             match result {
                 Ok(Ok(SyncOutcome::Ready(manifest))) => {
-                    manager
-                        .set_ready(&key, manifest.render_id, manifest.pages)
-                        .await;
+                    manager.set_ready(&key, manifest).await;
                 }
                 Ok(Ok(SyncOutcome::EntrypointMissing(message))) => {
                     manager
@@ -213,14 +241,17 @@ impl RenderManager {
         let _ = self.events.send(RenderEvent { status });
     }
 
-    async fn set_ready(&self, key: &str, render_id: String, pages: Vec<PageArtifact>) {
+    async fn set_ready(&self, key: &str, manifest: CacheManifest) {
+        if let Ok(mut artifacts) = self.artifacts.write() {
+            artifacts.insert(manifest.render_id.clone(), manifest.pages.clone());
+        }
         let mut statuses = self.statuses.write().await;
         let status = RenderStatus {
             revision_key: key.to_owned(),
             phase: RenderPhase::Ready,
             message: None,
-            render_id: Some(render_id),
-            pages,
+            render_id: Some(manifest.render_id),
+            pages: manifest.pages,
         };
         statuses.insert(key.to_owned(), status.clone());
         let _ = self.events.send(RenderEvent { status });
@@ -245,10 +276,6 @@ impl RenderManager {
             .get(revision_key)
             .with_context(|| format!("unknown revision {revision_key}"))?;
         let render_id = self.render_id(revision);
-        if let Some(manifest) = self.cached_manifest(&render_id)? {
-            return Ok(SyncOutcome::Ready(manifest));
-        }
-
         let staging = Builder::new()
             .prefix("ttm-render-")
             .tempdir_in(self.cache_root.join("renders"))
@@ -367,6 +394,14 @@ impl RenderManager {
         Ok(SyncOutcome::Ready(manifest))
     }
 
+    fn cached_revision(&self, revision_key: &str) -> Result<Option<CacheManifest>> {
+        let revision = self
+            .revisions
+            .get(revision_key)
+            .with_context(|| format!("unknown revision {revision_key}"))?;
+        self.cached_manifest(&self.render_id(revision))
+    }
+
     fn render_id(&self, revision: &Revision) -> String {
         let mut hash = Sha256::new();
         hash.update(self.repository.info.identity.as_bytes());
@@ -418,9 +453,9 @@ impl RenderManager {
         if render_id.len() != 64 || !render_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
         }
-        let manifest = self.cached_manifest(render_id).ok().flatten()?;
-        let page = manifest
-            .pages
+        let artifacts = self.artifacts.read().ok()?;
+        let page = artifacts
+            .get(render_id)?
             .iter()
             .find(|page| page.number == page_number)?;
         Some(

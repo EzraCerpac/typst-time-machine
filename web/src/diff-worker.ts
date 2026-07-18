@@ -3,18 +3,38 @@
 import pixelmatch from "pixelmatch";
 
 interface DiffRequest {
-  left: ArrayBuffer;
-  right: ArrayBuffer;
-  width: number;
-  height: number;
+  left: ImageBitmap;
+  right: ImageBitmap;
+  scale: number;
+  generation: number;
 }
 
 self.onmessage = (event: MessageEvent<DiffRequest>) => {
-  const { left, right, width, height } = event.data;
+  const { left, right, scale, generation } = event.data;
+  const width = Math.ceil(Math.max(left.width, right.width) * scale);
+  const height = Math.ceil(Math.max(left.height, right.height) * scale);
+  const rasterize = (image: ImageBitmap) => {
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext("2d", { willReadFrequently: true })!;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(
+      image,
+      Math.round((width - image.width * scale) / 2),
+      Math.round((height - image.height * scale) / 2),
+      image.width * scale,
+      image.height * scale,
+    );
+    return context.getImageData(0, 0, width, height).data;
+  };
+  const leftPixels = rasterize(left);
+  const rightPixels = rasterize(right);
+  left.close();
+  right.close();
   const output = new Uint8ClampedArray(width * height * 4);
   const changed = pixelmatch(
-    new Uint8ClampedArray(left),
-    new Uint8ClampedArray(right),
+    leftPixels,
+    rightPixels,
     output,
     width,
     height,
@@ -26,15 +46,20 @@ self.onmessage = (event: MessageEvent<DiffRequest>) => {
       aaColor: [190, 139, 55],
     },
   );
+  const outputCanvas = new OffscreenCanvas(width, height);
+  outputCanvas
+    .getContext("2d")!
+    .putImageData(new ImageData(output, width, height), 0, 0);
+  const bitmap = outputCanvas.transferToImageBitmap();
   self.postMessage(
     {
-      output: output.buffer,
+      bitmap,
       width,
       height,
       changed,
       total: width * height,
+      generation,
     },
-    { transfer: [output.buffer] },
+    { transfer: [bitmap] },
   );
 };
-

@@ -228,6 +228,7 @@ select,
 }
 
 .document-workbench {
+  overflow-anchor: none;
   display: grid;
   grid-template-columns: minmax(170px, 230px) minmax(0, 1fr) minmax(170px, 230px);
   align-items: start;
@@ -608,6 +609,7 @@ select,
 }
 
 .revision-scrubber {
+  overflow-anchor: auto;
   display: grid;
   grid-template-columns: max-content minmax(180px, 1fr) minmax(220px, auto);
   align-items: center;
@@ -819,6 +821,8 @@ select,
 }
 
 .tree-node {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 58px;
   position: relative;
   width: calc(100% - var(--tree-rail));
   height: 58px;

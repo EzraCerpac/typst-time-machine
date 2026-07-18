@@ -327,7 +327,11 @@ fn static_response(
         .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
     response.headers_mut().insert(
         CACHE_CONTROL,
-        HeaderValue::from_static("no-store, max-age=0"),
+        HeaderValue::from_static(if html {
+            "no-store, max-age=0"
+        } else {
+            "private, max-age=31536000, immutable"
+        }),
     );
     response.headers_mut().insert(
         "x-content-type-options",
