@@ -18,7 +18,7 @@ use axum::{
 use futures_util::StreamExt as FuturesStreamExt;
 use rand::{Rng, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{
@@ -160,19 +160,51 @@ pub async fn serve(
         .fallback(not_found)
         .with_state(state);
 
+    let (signal_ready_tx, signal_ready_rx) = oneshot::channel();
+    let signal_task = tokio::spawn(shutdown_signal(shutdown, signal_ready_tx));
+    signal_ready_rx
+        .await
+        .context("shutdown signal task stopped during startup")?
+        .context("install shutdown signal handler")?;
+
     println!("Typst Time Machine: {url}");
     if open_browser {
         open::that(&url).context("open browser")?;
     }
     let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(shutdown))
+        .with_graceful_shutdown(async move {
+            let _ = signal_task.await;
+        })
         .await;
     render.shutdown().await;
     result.context("run local viewer")
 }
 
-async fn shutdown_signal(shutdown: tokio_util::sync::CancellationToken) {
-    if tokio::signal::ctrl_c().await.is_ok() {
+async fn shutdown_signal(
+    shutdown: tokio_util::sync::CancellationToken,
+    ready: oneshot::Sender<std::io::Result<()>>,
+) {
+    #[cfg(unix)]
+    let signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+
+    #[cfg(unix)]
+    let mut signal = match signal {
+        Ok(signal) => signal,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
+
+    let _ = ready.send(Ok(()));
+
+    #[cfg(unix)]
+    let interrupted = signal.recv().await.is_some();
+
+    #[cfg(not(unix))]
+    let interrupted = tokio::signal::ctrl_c().await.is_ok();
+
+    if interrupted {
         eprintln!("Shutting down…");
         shutdown.cancel();
     }
