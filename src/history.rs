@@ -554,7 +554,7 @@ fn run_text(command: &mut Command, action: &str) -> Result<String> {
 fn repository_identity(git_dir: &Path) -> String {
     let mut hash = Sha256::new();
     hash.update(git_dir.as_os_str().as_encoded_bytes());
-    format!("{:x}", hash.finalize())
+    crate::hash::lower_hex(hash.finalize())
 }
 
 fn parse_unix(timestamp: &str) -> Result<i64> {
