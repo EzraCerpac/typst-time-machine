@@ -1,0 +1,120 @@
+name: Crates.io unblock monitor
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: crates-io-unblock-monitor
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check citationberg
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect latest citationberg release
+        id: inspect
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import urllib.request
+
+          headers = {
+              "Accept": "application/json",
+              "User-Agent": "typst-time-machine crates.io unblock monitor",
+          }
+
+          def fetch(url: str) -> bytes:
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return response.read()
+
+          metadata = json.loads(fetch("https://crates.io/api/v1/crates/citationberg"))
+          version = metadata["crate"]["max_stable_version"]
+          dependencies = json.loads(
+              fetch(
+                  "https://crates.io/api/v1/crates/"
+                  f"citationberg/{version}/dependencies"
+              )
+          )["dependencies"]
+          quick_xml = next(
+              dependency
+              for dependency in dependencies
+              if dependency["crate_id"] == "quick-xml"
+              and dependency["kind"] == "normal"
+          )
+          requirement = quick_xml["req"]
+
+          # citationberg currently uses a simple caret requirement. Be conservative
+          # if that ever changes to a disjunction: every branch must start at 0.41+.
+          branches = requirement.split("||")
+          floors = []
+          for branch in branches:
+              match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", branch)
+              if match is None:
+                  floors.append((0, 0, 0))
+              else:
+                  floors.append(tuple(int(part or 0) for part in match.groups()))
+          ready = all(floor >= (0, 41, 0) for floor in floors)
+
+          output_path = os.environ["GITHUB_OUTPUT"]
+          with open(output_path, "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+              output.write(f"quick_xml={requirement}\n")
+              output.write(f"ready={'true' if ready else 'false'}\n")
+
+          summary_path = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write("## crates.io publication dependency\n\n")
+              summary.write(f"- citationberg: `{version}`\n")
+              summary.write(f"- quick-xml requirement: `{requirement}`\n")
+              summary.write(f"- ready: `{'yes' if ready else 'no'}`\n")
+
+      - name: Open publication reminder
+        if: steps.inspect.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CITATIONBERG_VERSION: ${{ steps.inspect.outputs.version }}
+          QUICK_XML_REQUIREMENT: ${{ steps.inspect.outputs.quick_xml }}
+        shell: bash
+        run: |
+          marker="<!-- crates-io-unblock: citationberg-quick-xml -->"
+          existing="$(
+            gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state all \
+              --limit 100 \
+              --json body \
+              --jq "map(select(.body | contains(\"$marker\"))) | length"
+          )"
+          if [ "$existing" -ne 0 ]; then
+            echo "Publication reminder already exists."
+            exit 0
+          fi
+
+          body="$marker
+          citationberg $CITATIONBERG_VERSION now requires quick-xml $QUICK_XML_REQUIREMENT, so the crates.io publication blocker is gone.
+
+          - Remove the temporary \`[patch.crates-io]\` override.
+          - Refresh \`Cargo.lock\`.
+          - Run \`cargo audit\`.
+          - Run \`cargo package --locked\`.
+          - Run \`cargo publish --dry-run --locked\`.
+          - Authenticate with a scoped crates.io API token.
+          - Run \`cargo publish --locked\`.
+          - Verify installation of the published version with \`cargo install typst-time-machine --locked\`."
+
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Publish typst-time-machine to crates.io" \
+            --assignee "$GITHUB_REPOSITORY_OWNER" \
+            --body "$body"
