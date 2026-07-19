@@ -697,8 +697,9 @@ function renderStage() {
 
   patchPageSlot(stage.querySelector<HTMLElement>('[data-page-slot="a"]'), leftRevision, left, "A");
   patchPageSlot(stage.querySelector<HTMLElement>('[data-page-slot="b"]'), rightRevision, right, "B");
-  stage.querySelector<HTMLElement>(".stack-pages")?.classList.toggle("show-a", blinkHeld);
-  stage.querySelector<HTMLElement>(".stack-pages")?.classList.toggle("show-b", !blinkHeld);
+  const blinkPages = stage.querySelector<HTMLElement>(".blink-pages");
+  blinkPages?.classList.toggle("show-a", blinkHeld);
+  blinkPages?.classList.toggle("show-b", !blinkHeld);
   const same = stage.querySelector<HTMLElement>(".same-output");
   if (same) same.hidden = !outputMatchesFirstParent(rightRevision);
 }
@@ -718,7 +719,7 @@ function ensureStageStructure(stage: HTMLElement) {
     stage.innerHTML = `<div class="split-pages">${pageSlot("a")}${pageSlot("b")}</div>`;
   } else if (mode === "blink") {
     stage.innerHTML = `
-      <div class="stack-pages show-b">
+      <div class="stack-pages blink-pages show-b">
         ${pageSlot("a")}
         ${pageSlot("b")}
         <span class="blink-instruction">Hold space or press document for A</span>
