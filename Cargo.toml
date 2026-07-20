@@ -41,10 +41,10 @@ tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "proce
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 toml = "1.1"
-typst = "=0.15.0"
-typst-kit = { version = "=0.15.0", default-features = false, features = ["datetime", "embedded-fonts", "emit-diagnostics", "scan-fonts", "system-downloader", "system-files"] }
-typst-layout = "=0.15.0"
-typst-svg = "=0.15.0"
+typst = "=0.15.1"
+typst-kit = { version = "=0.15.1", default-features = false, features = ["datetime", "embedded-fonts", "emit-diagnostics", "scan-fonts", "system-downloader", "system-files"] }
+typst-layout = "=0.15.1"
+typst-svg = "=0.15.1"
 walkdir = "2.5"
 
 [profile.release]
