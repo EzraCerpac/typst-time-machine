@@ -84,6 +84,11 @@ reachable revision tree. Arrow keys scrub the active view. Space temporarily
 shows revision A in Blink mode, and Wipe mode can be dragged directly on the
 document.
 
+When inserted or deleted pages shift later page numbers, the viewer uses exact
+rendered-page matches to suggest likely A/B pairs with visible confidence.
+Suggestions never replace the independent page selectors: apply one explicitly,
+or keep any manual pairing.
+
 Inspect or clear cached render artifacts:
 
 ```sh
@@ -183,7 +188,8 @@ step after the patched citationberg release is available.
 - Historical committed revisions only
 - Git-backed JJ repositories
 - Fixed entrypoint path; renamed historical entrypoints are not guessed
-- Physical page-number pairing with manual A/B selectors
+- Conservative page-shift suggestions backed by exact rendered-page matches;
+  heavily reflowed documents may still require manual A/B pairing
 - No source editor, CI snapshot manager, or publishing
 
 ## License

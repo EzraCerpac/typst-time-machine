@@ -227,6 +227,57 @@ select,
   cursor: pointer;
 }
 
+.pair-suggestion {
+  min-width: 0;
+  min-height: 34px;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--amber);
+  background: rgb(250 251 248 / 72%);
+  color: var(--graphite-soft);
+  font: 11px/1.35 "SFMono-Regular", Consolas, monospace;
+}
+
+.pair-suggestion[hidden],
+.pair-suggestion button[hidden],
+.pair-confidence[hidden] {
+  display: none;
+}
+
+.pair-suggestion p {
+  margin: 0;
+}
+
+.pair-confidence {
+  color: var(--amber);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.pair-suggestion button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--cyan);
+  border-radius: 0;
+  background: transparent;
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pair-suggestion button:hover {
+  background: var(--cyan-pale);
+}
+
 .document-workbench {
   overflow-anchor: none;
   display: grid;
@@ -543,12 +594,32 @@ select,
 }
 
 .page-tick {
-  min-width: 27px;
-  height: 27px;
+  min-width: 34px;
+  height: 34px;
   border: 1px solid var(--line);
   background: var(--paper-bright);
   font: 9px/1 "SFMono-Regular", Consolas, monospace;
   cursor: pointer;
+}
+
+.page-tick.shifted {
+  min-width: 48px;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  place-content: center;
+  gap: 5px;
+  padding-inline: 5px;
+}
+
+.page-tick.shifted span:first-child {
+  color: var(--graphite-soft);
+}
+
+.page-tick.unpaired {
+  display: inline-grid;
+  place-items: center;
+  border-style: dashed;
+  cursor: default;
 }
 
 .page-tick.changed {
@@ -1069,6 +1140,22 @@ select,
   .pin {
     grid-column: 2;
     grid-row: 2;
+  }
+
+  .pair-suggestion {
+    grid-row: 4;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pair-suggestion button {
+    width: 100%;
+    min-height: 36px;
+  }
+
+  .page-tick {
+    min-height: 44px;
   }
 
   .document-workbench {
