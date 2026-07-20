@@ -29,7 +29,7 @@ use typst_kit::{
 use typst_layout::PagedDocument;
 use typst_svg::SvgOptions;
 
-pub const EMBEDDED_TYPST_VERSION: &str = "0.15.0";
+pub const EMBEDDED_TYPST_VERSION: &str = "0.15.1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EngineConfig {

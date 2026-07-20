@@ -23,7 +23,7 @@ object.
 - Jujutsu when opening a JJ repository
 - macOS or Linux
 
-The released `ttm` binary contains Typst 0.15.0 and the browser frontend. Bun is
+The released `ttm` binary contains Typst 0.15.1 and the browser frontend. Bun is
 needed only when building the frontend from source. An external Typst 0.15+
 binary is optional.
 
