@@ -6,9 +6,9 @@ import {
   phaseLabel,
   selectionForAlignedPair,
   shortId,
+  type AlignedPagePair,
   type HistoryMode,
   type PageAlignment,
-  type PagePair,
   type RenderStatus,
   type Revision,
   type Session,
@@ -204,6 +204,7 @@ function bindControls() {
     const previous = pinnedA;
     pinnedA = selectedB;
     pageA = pageB;
+    pairingAnchor = "right";
     patchPinnedSelection(previous, pinnedA);
     updateComparison();
     focusVisible(true);
@@ -221,6 +222,7 @@ function bindControls() {
         selectedB = revisionIndex(keys[0]);
         pageB = 0;
       }
+      pairingAnchor = "right";
       scrubSelection.cancel();
       previewGeneration += 1;
       previewedB = selectedB;
@@ -693,12 +695,14 @@ function currentPageAlignment(): PageAlignment {
   );
 }
 
-function suggestedPairForCurrentPage(alignment = currentPageAlignment()): PagePair | null {
+function suggestedPairForCurrentPage(alignment = currentPageAlignment()): AlignedPagePair | null {
   if (!alignment.shifted) return null;
-  return findAlignedPair(
-    alignment,
-    pairingAnchor,
-    pairingAnchor === "left" ? pageA : pageB,
+  return (
+    findAlignedPair(
+      alignment,
+      pairingAnchor,
+      pairingAnchor === "left" ? pageA : pageB,
+    ) ?? null
   );
 }
 
@@ -736,7 +740,7 @@ function renderPagePairing() {
         : `A ${(pair.leftIndex ?? 0) + 1} has no reliable B pair. Choose pages manually.`;
     return;
   }
-  if (!pair?.confidence || !selection || pair.leftIndex === pair.rightIndex) {
+  if (!pair || !pair.confidence || !selection || pair.leftIndex === pair.rightIndex) {
     const left = session.revisions[pinnedA].render;
     const right = session.revisions[previewedB].render;
     const unequalReadyPages =
@@ -756,9 +760,9 @@ function renderPagePairing() {
     return;
   }
 
-  const leftPage = pair.leftIndex + 1;
-  const rightPage = pair.rightIndex + 1;
-  const applied = pageA === pair.leftIndex && pageB === pair.rightIndex;
+  const leftPage = selection.pageA + 1;
+  const rightPage = selection.pageB + 1;
+  const applied = pageA === selection.pageA && pageB === selection.pageB;
   container.hidden = false;
   container.dataset.confidence = pair.confidence;
   confidence.hidden = false;
@@ -774,8 +778,32 @@ function renderPagePairing() {
 function renderPageRail() {
   const alignment = currentPageAlignment();
   const rail = required<HTMLElement>("#page-rail");
-  rail.innerHTML = alignment.pairs
-    .map((pair) => {
+  if (alignment.pairs.length === 0) {
+    const left = session.revisions[pinnedA].render;
+    const right = session.revisions[previewedB].render;
+    const leftPages = left?.phase === "ready" ? left.pages : [];
+    const rightPages = right?.phase === "ready" ? right.pages : [];
+    const count = Math.max(leftPages.length, rightPages.length);
+    rail.innerHTML = Array.from({ length: count }, (_, index) => {
+      const leftPage = leftPages[index];
+      const rightPage = rightPages[index];
+      if (!leftPage || !rightPage) {
+        const label = leftPage ? `A${index + 1}` : `B${index + 1}`;
+        return `<span class="page-tick unpaired" aria-label="${label} has no reliable pair">${label}</span>`;
+      }
+      const relation = leftPage.hash === rightPage.hash ? "same" : "changed";
+      const active = pageA === index && pageB === index;
+      return `<button
+        type="button"
+        class="page-tick ${relation} ${active ? "active" : ""}"
+        data-page-a="${index}"
+        data-page-b="${index}"
+        aria-pressed="${active}"
+        aria-label="Use physical page ${index + 1} for A and B, ${relation}"
+      >${index + 1}</button>`;
+    }).join("");
+  } else {
+    rail.innerHTML = alignment.pairs.map((pair) => {
       const leftPage = pair.leftIndex == null ? null : pair.leftIndex + 1;
       const rightPage = pair.rightIndex == null ? null : pair.rightIndex + 1;
       const active = pair.leftIndex === pageA && pair.rightIndex === pageB;
@@ -798,8 +826,8 @@ function renderPageRail() {
         aria-pressed="${active}"
         aria-label="${escapeHtml(description)}"
       >${label}</button>`;
-    })
-    .join("");
+    }).join("");
+  }
   rail.querySelectorAll<HTMLButtonElement>(".page-tick").forEach((button) => {
     button.addEventListener("click", () => {
       const leftIndex = button.dataset.pageA;
@@ -813,7 +841,7 @@ function renderPageRail() {
   });
 }
 
-function pagePairDescription(pair: PagePair): string {
+function pagePairDescription(pair: AlignedPagePair): string {
   const confidence = pair.confidence ? `, ${pair.confidence} confidence` : "";
   if (pair.leftIndex == null && pair.rightIndex != null) {
     return `B page ${pair.rightIndex + 1} has no reliable A pair`;
@@ -1032,9 +1060,11 @@ function selectRevision(index: number, recenter = true) {
   if (index < 0 || index >= session.revisions.length) return;
   const previous = selectedB;
   selectedB = index;
+  pairingAnchor = "right";
   patchSelectedRevision(previous, selectedB, recenter);
   renderRevisionScrubber(recenter);
   updatePreviewPending();
+  renderPagePairing();
   focusVisible();
   void previewRevision(index);
 }
