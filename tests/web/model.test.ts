@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import {
   alignPages,
+  clampPageIndex,
   findAlignedPair,
   layoutRevisionGraph,
   outputsMatch,
   pageRelation,
   phaseLabel,
+  reconcileHistorySelection,
   selectionForAlignedPair,
   shortId,
   type PageArtifact,
@@ -164,6 +166,52 @@ describe("visual comparison model", () => {
   test("keeps labels concise", () => {
     expect(shortId("1234567890")).toBe("12345678");
     expect(phaseLabel(ready(["a", "b"]))).toBe("2 pages");
+  });
+
+  test("keeps page indexes valid across revisions without document output", () => {
+    expect(clampPageIndex(4, 0)).toBe(0);
+    expect(clampPageIndex(-1, 19)).toBe(0);
+    expect(clampPageIndex(20, 19)).toBe(18);
+  });
+
+  test("preserves visible revisions and falls back at a shrunken history boundary", () => {
+    const revision = (key: string, commit: string, parents: string[] = []) => ({
+      key,
+      commit_id: commit,
+      parent_ids: parents,
+    });
+    const expanded = [
+      revision("new", "1", ["2"]),
+      revision("selected", "2", ["3"]),
+      revision("pinned", "3"),
+      revision("branch-pin", "4"),
+    ];
+    expect(
+      reconcileHistorySelection(
+        expanded,
+        ["new", "selected", "pinned"],
+        "selected",
+        "branch-pin",
+      ),
+    ).toEqual({
+      selectedKey: "selected",
+      pinnedKey: "branch-pin",
+      selectedReset: false,
+      pinnedReset: false,
+    });
+    expect(
+      reconcileHistorySelection(
+        [revision("new", "1", ["2"]), revision("boundary", "2")],
+        ["new", "boundary"],
+        "removed",
+        "also-removed",
+      ),
+    ).toEqual({
+      selectedKey: "boundary",
+      pinnedKey: "boundary",
+      selectedReset: true,
+      pinnedReset: true,
+    });
   });
 
   test("lays merge history onto separate lanes", () => {

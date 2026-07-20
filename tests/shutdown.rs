@@ -101,6 +101,88 @@ fn cache_hit_survives_shutdown_without_recompiling() {
     );
 }
 
+#[test]
+fn history_limit_updates_pinned_session_and_render_catalog() {
+    let mut server = TestServer::start(false);
+    let pinned_head = git_text(&server.repository, &["rev-parse", "HEAD"]);
+
+    fs::write(server.repository.join("main.typ"), "= Live head\n").expect("write live commit");
+    git(&server.repository, &["add", "main.typ"]);
+    git(
+        &server.repository,
+        &[
+            "-c",
+            "user.name=TTM Test",
+            "-c",
+            "user.email=ttm@example.invalid",
+            "commit",
+            "-qm",
+            "live after startup",
+        ],
+    );
+    let live_head = git_text(&server.repository, &["rev-parse", "HEAD"]);
+
+    let response = http_post(&server.url, "api/history", r#"{"limit":3}"#, None);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let session: serde_json::Value =
+        serde_json::from_str(http_body(&response)).expect("parse updated session");
+    assert_eq!(session["history"]["limit"], 3);
+    assert_eq!(
+        session["history"]["first_parent_keys"]
+            .as_array()
+            .expect("first-parent keys")
+            .len(),
+        3
+    );
+    let revisions = session["revisions"].as_array().expect("session revisions");
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision["commit_id"] == pinned_head)
+    );
+    assert!(
+        revisions
+            .iter()
+            .all(|revision| revision["commit_id"] != live_head)
+    );
+
+    let old_key = session["history"]["first_parent_keys"][2]
+        .as_str()
+        .expect("old revision key");
+    let queue = http_post(
+        &server.url,
+        "api/render",
+        &format!(r#"{{"revision_key":"{old_key}"}}"#),
+        None,
+    );
+    assert!(queue.starts_with("HTTP/1.1 200"), "{queue}");
+    wait_for_revision_ready(&server.url, old_key);
+
+    let shrink = http_post(&server.url, "api/history", r#"{"limit":1}"#, None);
+    assert!(shrink.starts_with("HTTP/1.1 200"), "{shrink}");
+    let hidden_queue = http_post(
+        &server.url,
+        "api/render",
+        &format!(r#"{{"revision_key":"{old_key}"}}"#),
+        None,
+    );
+    assert!(hidden_queue.starts_with("HTTP/1.1 400"), "{hidden_queue}");
+
+    assert!(
+        http_post(&server.url, "api/history", r#"{"limit":0}"#, None).starts_with("HTTP/1.1 400")
+    );
+    assert!(
+        http_post(
+            &server.url,
+            "api/history",
+            r#"{"limit":2}"#,
+            Some("http://wrong.invalid"),
+        )
+        .starts_with("HTTP/1.1 403")
+    );
+    server.interrupt();
+}
+
 impl TestServer {
     fn start(block_compile: bool) -> Self {
         let workspace = tempfile::tempdir().expect("create test workspace");
@@ -125,6 +207,25 @@ impl TestServer {
                 "initial",
             ],
         );
+        for (source, message) in [
+            ("= Shutdown test two\n", "second"),
+            ("= Shutdown test three\n", "third"),
+        ] {
+            fs::write(repository.join("main.typ"), source).expect("write Typst source revision");
+            git(&repository, &["add", "main.typ"]);
+            git(
+                &repository,
+                &[
+                    "-c",
+                    "user.name=TTM Test",
+                    "-c",
+                    "user.email=ttm@example.invalid",
+                    "commit",
+                    "-qm",
+                    message,
+                ],
+            );
+        }
 
         let compiler = workspace.path().join("fake-typst");
         fs::write(
@@ -392,6 +493,30 @@ fn wait_for_ready_session(url: &str) {
     }
 }
 
+fn wait_for_revision_ready(url: &str, revision_key: &str) {
+    let deadline = Instant::now() + TEST_DEADLINE;
+    loop {
+        let response = http_get(url, "api/session");
+        let session: serde_json::Value =
+            serde_json::from_str(http_body(&response)).expect("parse session");
+        if session["revisions"]
+            .as_array()
+            .expect("session revisions")
+            .iter()
+            .any(|revision| {
+                revision["key"] == revision_key && revision["render"]["phase"] == "ready"
+            })
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for revision {revision_key}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn http_get(url: &str, suffix: &str) -> String {
     let target = url.strip_prefix("http://").expect("ttm URL uses HTTP");
     let (authority, token) = target.split_once('/').expect("ttm URL has a token");
@@ -408,6 +533,48 @@ fn http_get(url: &str, suffix: &str) -> String {
         .read_to_string(&mut response)
         .expect("read HTTP response");
     response
+}
+
+fn http_post(url: &str, suffix: &str, body: &str, origin: Option<&str>) -> String {
+    let target = url.strip_prefix("http://").expect("ttm URL uses HTTP");
+    let (authority, token) = target.split_once('/').expect("ttm URL has a token");
+    let path = format!("/{}/{}", token.trim_end_matches('/'), suffix);
+    let origin = origin
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http://{authority}"));
+    let mut stream = TcpStream::connect(authority).expect("connect HTTP client");
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    )
+    .expect("send HTTP request");
+    stream.flush().expect("flush HTTP request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read HTTP response");
+    response
+}
+
+fn http_body(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("HTTP response has body")
+}
+
+fn git_text(repository: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(repository)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8(output.stdout)
+        .expect("Git returned UTF-8")
+        .trim()
+        .to_owned()
 }
 
 fn process_exists(pid: i32) -> bool {

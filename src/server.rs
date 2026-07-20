@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -18,11 +18,14 @@ use axum::{
 use futures_util::StreamExt as FuturesStreamExt;
 use rand::{RngExt, distr::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpListener, sync::oneshot};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, RwLock, oneshot},
+};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::{
-    history::{History, RepoInfo, Revision},
+    history::{History, HistoryRepository, MAX_HISTORY_LIMIT, RepoInfo, Revision},
     render::{FocusHistoryMode, RenderManager, RenderStatus},
 };
 
@@ -30,10 +33,17 @@ use crate::{
 struct AppState {
     token: String,
     origin: String,
-    repository: RepoInfo,
-    history: Arc<SessionHistory>,
-    revisions: Vec<Revision>,
+    repository: Arc<HistoryRepository>,
+    history_start: String,
+    history_paths: Vec<PathBuf>,
+    history: Arc<RwLock<HistoryState>>,
+    history_update: Arc<Mutex<()>>,
     render: Arc<RenderManager>,
+}
+
+struct HistoryState {
+    limit: usize,
+    history: History,
 }
 
 #[derive(Serialize)]
@@ -47,6 +57,8 @@ struct SessionResponse {
 
 #[derive(Clone, Serialize)]
 struct SessionHistory {
+    limit: usize,
+    max_limit: usize,
     first_parent_keys: Vec<String>,
     full_tree_keys: Vec<String>,
 }
@@ -69,6 +81,11 @@ struct FocusRequest {
     pinned_revision_key: String,
     history_mode: FocusHistoryMode,
     generation: u64,
+}
+
+#[derive(Deserialize)]
+struct HistoryRequest {
+    limit: usize,
 }
 
 #[derive(Debug)]
@@ -112,9 +129,11 @@ impl IntoResponse for ApiError {
 }
 
 pub async fn serve(
-    repository: RepoInfo,
+    repository: Arc<HistoryRepository>,
+    history_start: String,
     history: History,
     render: Arc<RenderManager>,
+    limit: usize,
     open_browser: bool,
 ) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -128,17 +147,15 @@ pub async fn serve(
         .collect();
     let origin = format!("http://{address}");
     let url = format!("{origin}/{token}/");
-    let revisions = history.revisions;
-    let history = Arc::new(SessionHistory {
-        first_parent_keys: history.first_parent_keys,
-        full_tree_keys: history.full_tree_keys,
-    });
+    let history_paths = render.target().history_paths.clone();
     let state = AppState {
         token,
         origin,
         repository,
-        revisions,
-        history,
+        history_start,
+        history_paths,
+        history: Arc::new(RwLock::new(HistoryState { limit, history })),
+        history_update: Arc::new(Mutex::new(())),
         render,
     };
     let shutdown = state.render.shutdown_token();
@@ -150,6 +167,7 @@ pub async fn serve(
         .route("/{token}/app.js", get(app_js))
         .route("/{token}/diff-worker.js", get(diff_worker))
         .route("/{token}/api/session", get(session))
+        .route("/{token}/api/history", post(update_history))
         .route("/{token}/api/render", post(queue_render))
         .route("/{token}/api/focus", post(focus_render))
         .route("/{token}/api/events", get(events))
@@ -263,13 +281,24 @@ async fn session(
     State(state): State<AppState>,
 ) -> Result<Json<SessionResponse>, ApiError> {
     check_token(&token, &state)?;
+    Ok(Json(session_response(&state).await))
+}
+
+async fn session_response(state: &AppState) -> SessionResponse {
     let statuses = state.render.statuses().await;
-    Ok(Json(SessionResponse {
-        repository: state.repository.clone(),
+    let current = state.history.read().await;
+    SessionResponse {
+        repository: state.repository.info.clone(),
         target: state.render.target().clone(),
         compiler: state.render.compiler_version().to_owned(),
-        history: (*state.history).clone(),
-        revisions: state
+        history: SessionHistory {
+            limit: current.limit,
+            max_limit: MAX_HISTORY_LIMIT,
+            first_parent_keys: current.history.first_parent_keys.clone(),
+            full_tree_keys: current.history.full_tree_keys.clone(),
+        },
+        revisions: current
+            .history
             .revisions
             .iter()
             .cloned()
@@ -278,7 +307,51 @@ async fn session(
                 revision,
             })
             .collect(),
-    }))
+    }
+}
+
+async fn update_history(
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<HistoryRequest>,
+) -> Result<Json<SessionResponse>, ApiError> {
+    check_token(&token, &state)?;
+    check_origin(&headers, &state)?;
+    if !(1..=MAX_HISTORY_LIMIT).contains(&request.limit) {
+        return Err(ApiError::bad_request(format!(
+            "history limit must be between 1 and {MAX_HISTORY_LIMIT}"
+        )));
+    }
+    if state.render.shutdown_token().is_cancelled() {
+        return Err(ApiError::unavailable("viewer is shutting down"));
+    }
+
+    let _update = state.history_update.lock().await;
+    if state.render.shutdown_token().is_cancelled() {
+        return Err(ApiError::unavailable("viewer is shutting down"));
+    }
+    let repository = Arc::clone(&state.repository);
+    let history_start = state.history_start.clone();
+    let history_paths = state.history_paths.clone();
+    let limit = request.limit;
+    let history = tokio::task::spawn_blocking(move || {
+        repository.history(Some(&history_start), limit, &history_paths)
+    })
+    .await
+    .map_err(|error| ApiError::unavailable(format!("history task failed: {error}")))?
+    .map_err(|error| ApiError::unavailable(error.to_string()))?;
+    if history.first_parent_keys.is_empty() {
+        return Err(ApiError::bad_request(
+            "no matching first-parent revisions found",
+        ));
+    }
+    state
+        .render
+        .set_history(&history)
+        .map_err(|error| ApiError::unavailable(error.to_string()))?;
+    *state.history.write().await = HistoryState { limit, history };
+    Ok(Json(session_response(&state).await))
 }
 
 async fn queue_render(

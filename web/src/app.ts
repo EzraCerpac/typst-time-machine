@@ -1,9 +1,11 @@
 import {
   alignPages,
+  clampPageIndex,
   findAlignedPair,
   layoutRevisionGraph,
   outputsMatch,
   phaseLabel,
+  reconcileHistorySelection,
   selectionForAlignedPair,
   shortId,
   type AlignedPagePair,
@@ -50,7 +52,9 @@ let heatmapGeneration = 0;
 let draggingWipe = false;
 let previewGeneration = 0;
 let focusGeneration = 0;
+let historyUpdatePending = false;
 const imagePreloads = new Map<string, Promise<void>>();
+const pendingRenderStatuses = new Map<string, RenderStatus>();
 const scrubSelection = new LatestFrameScheduler<number>((index) => {
   selectRevision(index, false);
 });
@@ -84,16 +88,37 @@ async function boot() {
   const response = await fetch(`${tokenBase}/api/session`);
   if (!response.ok) throw new Error("Could not load Typst history.");
   session = (await response.json()) as Session;
-  revisionByKeyIndex = new Map(session.revisions.map((revision) => [revision.key, revision]));
-  revisionIndexByKey = new Map(session.revisions.map((revision, index) => [revision.key, index]));
-  revisionByCommit = new Map(session.revisions.map((revision) => [revision.commit_id, revision]));
-  firstParentPosition = new Map(session.history.first_parent_keys.map((key, index) => [key, index]));
+  rebuildRevisionIndexes();
   selectedB = revisionIndex(session.history.first_parent_keys[0]);
   previewedB = selectedB;
   pinnedA = revisionIndex(session.history.first_parent_keys[1] ?? session.history.first_parent_keys[0]);
   renderShell();
   connectEvents();
   focusVisible(true);
+}
+
+function rebuildRevisionIndexes() {
+  revisionByKeyIndex = new Map(session.revisions.map((revision) => [revision.key, revision]));
+  revisionIndexByKey = new Map(session.revisions.map((revision, index) => [revision.key, index]));
+  revisionByCommit = new Map(session.revisions.map((revision) => [revision.commit_id, revision]));
+  firstParentPosition = new Map(session.history.first_parent_keys.map((key, index) => [key, index]));
+  flushPendingRenderStatuses(false);
+}
+
+function applyRenderStatus(revision: Revision, status: RenderStatus): boolean {
+  if (revision.render?.phase === "ready" && status.phase !== "ready") return false;
+  revision.render = status;
+  return true;
+}
+
+function flushPendingRenderStatuses(update: boolean) {
+  for (const [key, status] of pendingRenderStatuses) {
+    const revision = revisionByKeyIndex.get(key);
+    if (!revision) continue;
+    const applied = applyRenderStatus(revision, status);
+    pendingRenderStatuses.delete(key);
+    if (applied && update) updateRenderedRevision(revision);
+  }
 }
 
 function renderShell() {
@@ -110,7 +135,7 @@ function renderShell() {
       <div class="repo-facts">
         <span class="vcs">${session.repository.kind}</span>
         <strong>${escapeHtml(repoName)}</strong>
-        <span>${session.revisions.length} revisions</span>
+        <span id="revision-count">${session.revisions.length} revisions</span>
         <span title="${escapeHtml(session.compiler)}">${escapeHtml(session.compiler)}</span>
       </div>
     </header>
@@ -157,6 +182,22 @@ function renderShell() {
           <p id="history-description">The main story, oldest at left.</p>
         </div>
         <div class="history-actions">
+          <form class="history-limit" id="history-limit-form" aria-busy="false">
+            <label for="history-limit">Revision limit</label>
+            <input
+              id="history-limit"
+              type="number"
+              min="1"
+              max="${session.history.max_limit}"
+              step="1"
+              value="${session.history.limit}"
+              aria-describedby="history-limit-help"
+            />
+            <button type="submit">Load history</button>
+            <span id="history-limit-help" class="sr-only">
+              Maximum matching revisions in each history view, from 1 to ${session.history.max_limit}.
+            </span>
+          </form>
           <div class="history-mode-group" role="group" aria-label="History shape">
             <button type="button" data-history-mode="first-parent" aria-pressed="true">First parent</button>
             <button type="button" data-history-mode="full-tree" aria-pressed="false">Full tree</button>
@@ -165,6 +206,7 @@ function renderShell() {
             <input id="collapse" type="checkbox" />
             Hide visually unchanged
           </label>
+          <p id="history-limit-status" role="status" aria-live="polite" aria-atomic="true"></p>
         </div>
       </div>
       <div class="revision-scrubber">
@@ -184,6 +226,10 @@ function renderShell() {
 }
 
 function bindControls() {
+  required<HTMLFormElement>("#history-limit-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void updateHistoryLimit();
+  });
   root.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       mode = button.dataset.mode as CompareMode;
@@ -200,7 +246,10 @@ function bindControls() {
   });
   required<HTMLButtonElement>("#pin-a").addEventListener("click", () => {
     previewedB = selectedB;
-    pageB = Math.min(pageB, (session.revisions[previewedB].render?.pages.length ?? 1) - 1);
+    pageB = clampPageIndex(
+      pageB,
+      session.revisions[previewedB].render?.pages.length ?? 0,
+    );
     const previous = pinnedA;
     pinnedA = selectedB;
     pageA = pageB;
@@ -309,13 +358,118 @@ function bindControls() {
   });
 }
 
+async function updateHistoryLimit() {
+  const form = required<HTMLFormElement>("#history-limit-form");
+  const input = required<HTMLInputElement>("#history-limit");
+  const button = required<HTMLButtonElement>("#history-limit-form button");
+  const status = required<HTMLElement>("#history-limit-status");
+  const restoreFocus = document.activeElement === input || document.activeElement === button;
+  const limit = Number(input.value);
+  status.setAttribute("role", "status");
+  if (!Number.isInteger(limit) || limit < 1 || limit > session.history.max_limit) {
+    status.textContent = `Choose a revision limit from 1 to ${session.history.max_limit}.`;
+    input.focus();
+    return;
+  }
+  if (limit === session.history.limit) {
+    status.textContent = `History already uses limit ${limit}.`;
+    return;
+  }
+
+  form.setAttribute("aria-busy", "true");
+  input.disabled = true;
+  button.disabled = true;
+  historyUpdatePending = true;
+  status.textContent = `Loading up to ${limit} matching revisions…`;
+  try {
+    const response = await fetch(`${tokenBase}/api/history`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ limit }),
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+    const payload = contentType.includes("application/json")
+      ? ((await response.json()) as Session | { error?: string })
+      : await response.text();
+    if (!response.ok) {
+      const message =
+        typeof payload === "string"
+          ? payload
+          : "error" in payload && payload.error
+            ? payload.error
+            : "history request failed";
+      throw new Error(message);
+    }
+
+    const previousSelectedKey = session.revisions[selectedB].key;
+    const previousPreviewedKey = session.revisions[previewedB].key;
+    const previousPinnedKey = session.revisions[pinnedA].key;
+    const next = payload as Session;
+    const visibleKeys =
+      historyMode === "first-parent" ? next.history.first_parent_keys : next.history.full_tree_keys;
+    const selection = reconcileHistorySelection(
+      next.revisions,
+      visibleKeys,
+      previousSelectedKey,
+      previousPinnedKey,
+    );
+    const previewedKey = next.revisions.some(
+      (revision) => revision.key === previousPreviewedKey,
+    )
+      ? previousPreviewedKey
+      : selection.selectedKey;
+
+    scrubSelection.cancel();
+    previewGeneration += 1;
+    session = next;
+    rebuildRevisionIndexes();
+    selectedB = revisionIndex(selection.selectedKey);
+    previewedB = revisionIndex(previewedKey);
+    pinnedA = revisionIndex(selection.pinnedKey);
+    required<HTMLElement>("#revision-count").textContent = `${session.revisions.length} revisions`;
+    input.max = String(session.history.max_limit);
+    input.value = String(session.history.limit);
+    updateAll();
+    focusVisible(true);
+    void previewRevision(selectedB);
+    const resets = [];
+    if (selection.selectedReset) {
+      resets.push("Previous B was outside the new limit; showing the oldest available revision.");
+    }
+    if (selection.pinnedReset) {
+      resets.push("Previous A was outside the new limit; pin moved to B or its parent.");
+    }
+    if (resets.length > 0) status.setAttribute("role", "alert");
+    status.textContent = `History updated. ${session.revisions.length} revisions available. ${resets.join(" ")}`.trim();
+  } catch (error) {
+    status.setAttribute("role", "alert");
+    status.textContent = `Could not update history. Previous limit remains. ${
+      error instanceof Error ? error.message : ""
+    }`.trim();
+  } finally {
+    form.setAttribute("aria-busy", "false");
+    input.disabled = false;
+    button.disabled = false;
+    historyUpdatePending = false;
+    flushPendingRenderStatuses(true);
+    if (restoreFocus) button.focus();
+  }
+}
+
 function connectEvents() {
   const events = new EventSource(`${tokenBase}/api/events`);
   events.addEventListener("render", (event) => {
     const payload = JSON.parse((event as MessageEvent).data) as { status: RenderStatus };
+    if (historyUpdatePending) {
+      pendingRenderStatuses.set(payload.status.revision_key, payload.status);
+      return;
+    }
     const revision = revisionByKeyIndex.get(payload.status.revision_key);
-    if (!revision) return;
-    revision.render = payload.status;
+    if (!revision) {
+      pendingRenderStatuses.set(payload.status.revision_key, payload.status);
+      return;
+    }
+    if (!applyRenderStatus(revision, payload.status)) return;
     updateRenderedRevision(revision);
     if (payload.status.phase === "ready") preloadNeighborPages();
   });
@@ -710,10 +864,10 @@ function normalizePageSelection() {
   const left = session.revisions[pinnedA].render;
   const right = session.revisions[previewedB].render;
   if (left?.phase === "ready" && left.pages.length > 0) {
-    pageA = Math.min(pageA, left.pages.length - 1);
+    pageA = clampPageIndex(pageA, left.pages.length);
   }
   if (right?.phase === "ready" && right.pages.length > 0) {
-    pageB = Math.min(pageB, right.pages.length - 1);
+    pageB = clampPageIndex(pageB, right.pages.length);
   }
 }
 
@@ -1080,8 +1234,8 @@ async function previewRevision(index: number) {
   }
 
   const generation = ++previewGeneration;
-  const pages = revision.render?.pages.length ?? 1;
-  const nextPage = Math.min(pageB, pages - 1);
+  const pages = revision.render?.pages.length ?? 0;
+  const nextPage = clampPageIndex(pageB, pages);
   const nextUrl = pageUrl(revision.render, nextPage);
   if (nextUrl) {
     try {

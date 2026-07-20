@@ -24,7 +24,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use crate::{
     config::ResolvedTarget,
     engine::{EMBEDDED_TYPST_VERSION, EngineConfig, EnginePage, EngineReply, EngineRequest},
-    history::{HistoryRepository, Revision},
+    history::{History, HistoryRepository, Revision},
 };
 
 const CACHE_VERSION: u32 = 2;
@@ -86,6 +86,10 @@ pub enum FocusHistoryMode {
 
 enum ScheduleCommand {
     Queue(String),
+    SetHistory {
+        first_parent_keys: Vec<String>,
+        full_tree_keys: Vec<String>,
+    },
     Focus {
         selected: String,
         pinned: String,
@@ -99,12 +103,14 @@ struct Scheduled {
     priority: u16,
     order: u64,
     key: String,
+    explicit: bool,
 }
 
 impl Ord for Scheduled {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority
             .cmp(&other.priority)
+            .then_with(|| self.explicit.cmp(&other.explicit))
             .then_with(|| other.order.cmp(&self.order))
     }
 }
@@ -117,16 +123,18 @@ impl PartialOrd for Scheduled {
 
 impl PartialEq for Scheduled {
     fn eq(&self, other: &Self) -> bool {
-        self.priority == other.priority && self.order == other.order && self.key == other.key
+        self.priority == other.priority
+            && self.order == other.order
+            && self.key == other.key
+            && self.explicit == other.explicit
     }
 }
 
 pub struct RenderManager {
     repository: Arc<HistoryRepository>,
     target: ResolvedTarget,
-    revisions: HashMap<String, Revision>,
-    first_parent_keys: Vec<String>,
-    full_tree_keys: Vec<String>,
+    revisions: StdRwLock<HashMap<String, Revision>>,
+    visible_revisions: StdRwLock<HashSet<String>>,
     cache_root: PathBuf,
     compiler_version: String,
     font_fingerprint: StdRwLock<Option<String>>,
@@ -177,13 +185,19 @@ impl RenderManager {
         let manager = Arc::new(Self {
             repository,
             target,
-            revisions: revisions
-                .iter()
-                .cloned()
-                .map(|revision| (revision.key.clone(), revision))
-                .collect(),
-            first_parent_keys: first_parent_keys.to_vec(),
-            full_tree_keys: full_tree_keys.to_vec(),
+            revisions: StdRwLock::new(
+                revisions
+                    .iter()
+                    .cloned()
+                    .map(|revision| (revision.key.clone(), revision))
+                    .collect(),
+            ),
+            visible_revisions: StdRwLock::new(
+                revisions
+                    .iter()
+                    .map(|revision| revision.key.clone())
+                    .collect(),
+            ),
             cache_root,
             compiler_version,
             font_fingerprint: StdRwLock::new(font_fingerprint),
@@ -203,8 +217,12 @@ impl RenderManager {
             ],
         });
         let scheduler = Arc::clone(&manager);
+        let first_parent_keys = first_parent_keys.to_vec();
+        let full_tree_keys = full_tree_keys.to_vec();
         manager.tasks.spawn(async move {
-            scheduler.run_scheduler(receiver).await;
+            scheduler
+                .run_scheduler(receiver, first_parent_keys, full_tree_keys)
+                .await;
         });
         Ok(manager)
     }
@@ -240,6 +258,33 @@ impl RenderManager {
         self.statuses.read().await.clone()
     }
 
+    pub fn set_history(&self, history: &History) -> Result<()> {
+        self.revisions
+            .write()
+            .expect("revision catalog lock poisoned")
+            .extend(
+                history
+                    .revisions
+                    .iter()
+                    .cloned()
+                    .map(|revision| (revision.key.clone(), revision)),
+            );
+        *self
+            .visible_revisions
+            .write()
+            .expect("visible revision lock poisoned") = history
+            .revisions
+            .iter()
+            .map(|revision| revision.key.clone())
+            .collect();
+        self.schedule
+            .send(ScheduleCommand::SetHistory {
+                first_parent_keys: history.first_parent_keys.clone(),
+                full_tree_keys: history.full_tree_keys.clone(),
+            })
+            .map_err(|_| anyhow::anyhow!("render scheduler is unavailable"))
+    }
+
     pub async fn queue(&self, revision_key: &str) -> Result<()> {
         self.validate_revision(revision_key)?;
         self.schedule
@@ -270,15 +315,31 @@ impl RenderManager {
         if self.shutdown.is_cancelled() {
             bail!("viewer is shutting down");
         }
-        if !self.revisions.contains_key(revision_key) {
+        if !self
+            .visible_revisions
+            .read()
+            .expect("visible revision lock poisoned")
+            .contains(revision_key)
+        {
             bail!("unknown revision key");
         }
         Ok(())
     }
 
+    fn revision(&self, revision_key: &str) -> Result<Revision> {
+        self.revisions
+            .read()
+            .expect("revision catalog lock poisoned")
+            .get(revision_key)
+            .cloned()
+            .with_context(|| format!("unknown revision {revision_key}"))
+    }
+
     async fn run_scheduler(
         self: Arc<Self>,
         mut receiver: mpsc::UnboundedReceiver<ScheduleCommand>,
+        mut first_parent_keys: Vec<String>,
+        mut full_tree_keys: Vec<String>,
     ) {
         let (finished_tx, mut finished_rx) = mpsc::unbounded_channel::<String>();
         let mut heap = BinaryHeap::new();
@@ -306,7 +367,21 @@ impl RenderManager {
                     match command {
                         ScheduleCommand::Queue(key) => {
                             order += 1;
-                            heap.push(Scheduled { priority: 950, order, key });
+                            heap.push(Scheduled {
+                                priority: 950,
+                                order,
+                                key,
+                                explicit: true,
+                            });
+                        }
+                        ScheduleCommand::SetHistory {
+                            first_parent_keys: next_first_parent_keys,
+                            full_tree_keys: next_full_tree_keys,
+                        } => {
+                            first_parent_keys = next_first_parent_keys;
+                            full_tree_keys = next_full_tree_keys;
+                            previous_focus = None;
+                            heap.retain(|job| job.explicit);
                         }
                         ScheduleCommand::Focus { selected, pinned, history_mode, generation } => {
                             if generation < latest_generation {
@@ -314,8 +389,8 @@ impl RenderManager {
                             }
                             latest_generation = generation;
                             let keys = match history_mode {
-                                FocusHistoryMode::FirstParent => &self.first_parent_keys,
-                                FocusHistoryMode::FullTree => &self.full_tree_keys,
+                                FocusHistoryMode::FirstParent => &first_parent_keys,
+                                FocusHistoryMode::FullTree => &full_tree_keys,
                             };
                             let selected_position = keys.iter().position(|key| key == &selected);
                             let previous_position = previous_focus
@@ -326,8 +401,9 @@ impl RenderManager {
                                 _ => Ordering::Equal,
                             };
                             previous_focus = Some(selected.clone());
-                            heap.clear();
-                            let mut queued = HashSet::new();
+                            heap.retain(|job| job.explicit);
+                            let mut queued =
+                                heap.iter().map(|job| job.key.clone()).collect::<HashSet<_>>();
                             push_job(&mut heap, &mut queued, &mut order, selected.clone(), 1000);
                             push_job(&mut heap, &mut queued, &mut order, pinned, 940);
                             if let Some(position) = selected_position {
@@ -355,7 +431,7 @@ impl RenderManager {
                                 push_job(&mut heap, &mut queued, &mut order, key.clone(), 100);
                             }
                             if matches!(history_mode, FocusHistoryMode::FirstParent) {
-                                for key in &self.full_tree_keys {
+                                for key in &full_tree_keys {
                                     push_job(&mut heap, &mut queued, &mut order, key.clone(), 10);
                                 }
                             }
@@ -476,10 +552,7 @@ impl RenderManager {
     }
 
     async fn render_embedded(&self, key: &str, worker_index: usize) -> Result<RenderOutcome> {
-        let revision = self
-            .revisions
-            .get(key)
-            .with_context(|| format!("unknown revision {key}"))?;
+        let revision = self.revision(key)?;
         let staging = Builder::new()
             .prefix("ttm-render-")
             .tempdir_in(self.cache_root.join("renders"))
@@ -513,7 +586,7 @@ impl RenderManager {
                 ..
             } => {
                 let manifest =
-                    self.publish_embedded_pages(revision, staging.path(), pages, dependencies)?;
+                    self.publish_embedded_pages(&revision, staging.path(), pages, dependencies)?;
                 Ok(RenderOutcome::Ready(manifest))
             }
             EngineReply::EntrypointMissing { message, .. } => {
@@ -567,10 +640,7 @@ impl RenderManager {
         if cancellation.is_cancelled() {
             return Ok(RenderOutcome::Cancelled);
         }
-        let revision = self
-            .revisions
-            .get(revision_key)
-            .with_context(|| format!("unknown revision {revision_key}"))?;
+        let revision = self.revision(revision_key)?;
         let staging = Builder::new()
             .prefix("ttm-render-")
             .tempdir_in(self.cache_root.join("renders"))
@@ -580,7 +650,7 @@ impl RenderManager {
             .tempdir()
             .context("create revision staging directory")?;
         let snapshot = snapshot_parent.path().join("tree");
-        let materialized = self.repository.materialize(revision, &snapshot)?;
+        let materialized = self.repository.materialize(&revision, &snapshot)?;
         if cancellation.is_cancelled() {
             return Ok(RenderOutcome::Cancelled);
         }
@@ -651,7 +721,7 @@ impl RenderManager {
             return Ok(RenderOutcome::Cancelled);
         }
         let dependencies = read_dependencies(&deps_path)?;
-        let manifest = self.publish_pages(revision, staging.path(), dependencies)?;
+        let manifest = self.publish_pages(&revision, staging.path(), dependencies)?;
         Ok(RenderOutcome::Ready(manifest))
     }
 
@@ -784,11 +854,8 @@ impl RenderManager {
     }
 
     fn cached_revision(&self, revision_key: &str) -> Result<Option<CacheManifest>> {
-        let revision = self
-            .revisions
-            .get(revision_key)
-            .with_context(|| format!("unknown revision {revision_key}"))?;
-        self.cached_manifest(&self.render_id(revision))
+        let revision = self.revision(revision_key)?;
+        self.cached_manifest(&self.render_id(&revision))
     }
 
     fn render_id(&self, revision: &Revision) -> String {
@@ -927,6 +994,7 @@ fn push_job(
         priority,
         order: *order,
         key,
+        explicit: false,
     });
 }
 

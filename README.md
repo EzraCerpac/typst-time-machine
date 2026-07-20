@@ -120,7 +120,9 @@ ttm view --target resume
 CLI values override target values. Configuration is optional and never created
 automatically. Without `history_paths`, first-parent and full-tree histories are
 loaded up to `--limit`; byte-identical first-parent output is marked and can be
-collapsed inside the viewer.
+collapsed inside the viewer. With `history_paths`, the limit counts matching
+revisions after path filtering. Change the current viewer limit from the history
+dock without restarting; the CLI value remains the next viewer's default.
 
 ## Safety and fidelity
 
@@ -183,8 +185,8 @@ step after the patched citationberg release is available.
 
 ## Current limits
 
-- The revision tree is limited by `--limit` and shows reachable ancestors, not
-  unrelated repository heads
+- Each history view is limited by the CLI or viewer revision limit and shows
+  reachable ancestors, not unrelated repository heads
 - Historical committed revisions only
 - Git-backed JJ repositories
 - Fixed entrypoint path; renamed historical entrypoints are not guessed

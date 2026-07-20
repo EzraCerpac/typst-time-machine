@@ -56,6 +56,8 @@ export interface Session {
   };
   compiler: string;
   history: {
+    limit: number;
+    max_limit: number;
     first_parent_keys: string[];
     full_tree_keys: string[];
   };
@@ -103,6 +105,49 @@ export interface PageAlignment {
 export interface PageSelection {
   pageA: number;
   pageB: number;
+}
+
+export function clampPageIndex(index: number, pageCount: number): number {
+  if (pageCount <= 0) return 0;
+  return Math.min(Math.max(index, 0), pageCount - 1);
+}
+
+export interface HistorySelection {
+  selectedKey: string;
+  pinnedKey: string;
+  selectedReset: boolean;
+  pinnedReset: boolean;
+}
+
+export function reconcileHistorySelection(
+  revisions: Pick<Revision, "key" | "commit_id" | "parent_ids">[],
+  visibleKeys: string[],
+  previousSelectedKey: string,
+  previousPinnedKey: string,
+): HistorySelection {
+  if (visibleKeys.length === 0) {
+    throw new Error("cannot select from empty history");
+  }
+  const selectedKey = visibleKeys.includes(previousSelectedKey)
+    ? previousSelectedKey
+    : visibleKeys[visibleKeys.length - 1];
+  const revisionKeys = new Set(revisions.map((revision) => revision.key));
+  const selectedRevision = revisions.find((revision) => revision.key === selectedKey);
+  const revisionByCommit = new Map(
+    revisions.map((revision) => [revision.commit_id, revision.key]),
+  );
+  const parentKey = selectedRevision?.parent_ids
+    .map((commit) => revisionByCommit.get(commit))
+    .find((key) => key != null);
+  const pinnedKey = revisionKeys.has(previousPinnedKey)
+    ? previousPinnedKey
+    : (parentKey ?? selectedKey);
+  return {
+    selectedKey,
+    pinnedKey,
+    selectedReset: selectedKey !== previousSelectedKey,
+    pinnedReset: pinnedKey !== previousPinnedKey,
+  };
 }
 
 interface PageAnchor {

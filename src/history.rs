@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
+pub const MAX_HISTORY_LIMIT: usize = 500;
+
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum VcsPreference {
@@ -205,6 +207,40 @@ impl HistoryRepository {
         })
     }
 
+    pub fn resolve_start(&self, start: Option<&str>) -> Result<String> {
+        match self.info.kind {
+            VcsKind::Git => run_text(
+                Command::new("git")
+                    .arg("--git-dir")
+                    .arg(&self.git_dir)
+                    .args(["rev-parse", "--verify"])
+                    .arg(format!("{}^{{commit}}", start.unwrap_or("HEAD"))),
+                "resolve Git start revision",
+            )
+            .map(|commit| commit.trim().to_owned()),
+            VcsKind::Jj => {
+                let operation = self
+                    .info
+                    .operation_id
+                    .as_deref()
+                    .context("missing pinned JJ operation")?;
+                let commits = run_text(
+                    Command::new("jj")
+                        .arg("--at-operation")
+                        .arg(operation)
+                        .arg("-R")
+                        .arg(&self.info.root)
+                        .args(["log", "-r"])
+                        .arg(start.unwrap_or("@-"))
+                        .args(["--no-graph", "-T"])
+                        .arg("self.commit_id() ++ \"\\n\""),
+                    "resolve JJ start revision",
+                )?;
+                pinned_jj_revset(&commits)
+            }
+        }
+    }
+
     #[cfg(test)]
     pub fn revisions(
         &self,
@@ -212,11 +248,7 @@ impl HistoryRepository {
         limit: usize,
         history_paths: &[PathBuf],
     ) -> Result<Vec<Revision>> {
-        let mut revisions =
-            self.collect_revision_metadata(start, limit, HistoryTraversal::FirstParent)?;
-        self.enrich_revisions(&mut revisions)?;
-        filter_revisions(&mut revisions, history_paths);
-        Ok(revisions)
+        self.collect_matching_revisions(start, limit, HistoryTraversal::FirstParent, history_paths)
     }
 
     pub fn history(
@@ -225,9 +257,18 @@ impl HistoryRepository {
         limit: usize,
         history_paths: &[PathBuf],
     ) -> Result<History> {
-        let first_parent =
-            self.collect_revision_metadata(start, limit, HistoryTraversal::FirstParent)?;
-        let full_tree = self.collect_revision_metadata(start, limit, HistoryTraversal::FullTree)?;
+        let first_parent = self.collect_matching_revisions(
+            start,
+            limit,
+            HistoryTraversal::FirstParent,
+            history_paths,
+        )?;
+        let full_tree = self.collect_matching_revisions(
+            start,
+            limit,
+            HistoryTraversal::FullTree,
+            history_paths,
+        )?;
         let mut revisions = full_tree.clone();
         let mut known = revisions
             .iter()
@@ -238,20 +279,12 @@ impl HistoryRepository {
                 revisions.push(revision.clone());
             }
         }
-        self.enrich_revisions(&mut revisions)?;
-        filter_revisions(&mut revisions, history_paths);
-        let visible = revisions
-            .iter()
-            .map(|revision| revision.commit_id.as_str())
-            .collect::<HashSet<_>>();
         let first_parent_keys = first_parent
             .iter()
-            .filter(|revision| visible.contains(revision.commit_id.as_str()))
             .map(|revision| revision.key.clone())
             .collect();
         let full_tree_keys = full_tree
             .iter()
-            .filter(|revision| visible.contains(revision.commit_id.as_str()))
             .map(|revision| revision.key.clone())
             .collect();
         Ok(History {
@@ -259,6 +292,32 @@ impl HistoryRepository {
             first_parent_keys,
             full_tree_keys,
         })
+    }
+
+    fn collect_matching_revisions(
+        &self,
+        start: Option<&str>,
+        limit: usize,
+        traversal: HistoryTraversal,
+        history_paths: &[PathBuf],
+    ) -> Result<Vec<Revision>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut scan_limit = limit;
+        loop {
+            let mut revisions = self.collect_revision_metadata(start, scan_limit, traversal)?;
+            let exhausted = revisions.len() < scan_limit;
+            self.enrich_revisions(&mut revisions)?;
+            filter_revisions(&mut revisions, history_paths);
+            if revisions.len() >= limit || exhausted {
+                revisions.truncate(limit);
+                return Ok(revisions);
+            }
+            scan_limit = scan_limit
+                .checked_mul(2)
+                .context("history scan limit overflow")?;
+        }
     }
 
     fn collect_revision_metadata(
@@ -529,6 +588,18 @@ fn history_revset(start: &str, traversal: HistoryTraversal) -> String {
     }
 }
 
+fn pinned_jj_revset(commits: &str) -> Result<String> {
+    let commits = commits
+        .lines()
+        .map(str::trim)
+        .filter(|commit| !commit.is_empty())
+        .collect::<Vec<_>>();
+    if commits.is_empty() {
+        bail!("JJ start revset resolved to no commits");
+    }
+    Ok(commits.join(" | "))
+}
+
 fn find_jj_workspace(start: &Path) -> Option<&Path> {
     start
         .ancestors()
@@ -745,6 +816,16 @@ mod tests {
     }
 
     #[test]
+    fn pins_every_commit_in_a_jj_start_revset() -> Result<()> {
+        assert_eq!(
+            pinned_jj_revset("aaaaaaaa\nbbbbbbbb\n")?,
+            "aaaaaaaa | bbbbbbbb"
+        );
+        assert!(pinned_jj_revset("\n").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn history_filters_match_directories() {
         assert!(paths_overlap(
             Path::new("applications/example.typ"),
@@ -802,6 +883,53 @@ mod tests {
         );
         assert!(!materialized.join("untracked.typ").exists());
         assert!(git_text(&root, &["status", "--porcelain"])?.contains("main.typ"));
+        Ok(())
+    }
+
+    #[test]
+    fn history_limit_counts_matching_revisions_after_path_filtering() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("repo");
+        fs::create_dir(&root)?;
+        git(&root, &["init", "-b", "main"])?;
+
+        fs::write(root.join("main.typ"), "= Base\n")?;
+        git(&root, &["add", "main.typ"])?;
+        commit(&root, "target base")?;
+        for index in 1..=3 {
+            fs::write(root.join("notes.txt"), format!("note {index}\n"))?;
+            git(&root, &["add", "notes.txt"])?;
+            commit(&root, &format!("unrelated {index}"))?;
+        }
+        fs::write(root.join("main.typ"), "= Second\n")?;
+        git(&root, &["add", "main.typ"])?;
+        commit(&root, "target second")?;
+        fs::write(root.join("notes.txt"), "newest note\n")?;
+        git(&root, &["add", "notes.txt"])?;
+        commit(&root, "unrelated newest")?;
+
+        let repository = HistoryRepository::discover(&root, VcsPreference::Git)?;
+        let path = [PathBuf::from("main.typ")];
+        let history = repository.history(None, 2, &path)?;
+        let subjects = history
+            .first_parent_keys
+            .iter()
+            .map(|key| {
+                history
+                    .revisions
+                    .iter()
+                    .find(|revision| &revision.key == key)
+                    .map(|revision| revision.subject.as_str())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(subjects, ["target second", "target base"]);
+        assert_eq!(history.full_tree_keys.len(), 2);
+
+        let all_matches = repository.history(None, 10, &path)?;
+        assert_eq!(all_matches.first_parent_keys.len(), 2);
+        let no_matches = repository.history(None, 10, &[PathBuf::from("missing.typ")])?;
+        assert!(no_matches.first_parent_keys.is_empty());
         Ok(())
     }
 

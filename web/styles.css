@@ -655,7 +655,62 @@ select,
 .history-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 18px;
+}
+
+.history-limit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--graphite-soft);
+  font: 10px/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.history-limit input {
+  width: 58px;
+  min-height: 31px;
+  padding: 0 5px;
+  border: 1px solid #96a3a3;
+  border-radius: 0;
+  background: var(--paper-bright);
+}
+
+.history-limit button {
+  min-height: 31px;
+  padding: 0 9px;
+  border: 1px solid var(--cyan);
+  border-radius: 0;
+  background: var(--paper-bright);
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.history-limit[aria-busy="true"],
+.history-limit button:disabled {
+  opacity: 0.62;
+}
+
+#history-limit-status {
+  flex-basis: 100%;
+  width: 100%;
+  min-height: 1.2em;
+  text-align: right;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .history-mode-group {
@@ -1181,14 +1236,28 @@ select,
   }
 
   .history-heading {
+    flex-direction: column;
     align-items: start;
     gap: 12px;
   }
 
   .history-actions {
+    width: 100%;
     align-items: flex-end;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .history-limit {
+    width: 100%;
+  }
+
+  .history-limit input {
+    flex: 1;
+  }
+
+  #history-limit-status {
+    text-align: left;
   }
 
   .revision-scrubber {

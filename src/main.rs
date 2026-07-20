@@ -12,7 +12,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::{
     config::{ResolveRequest, resolve},
-    history::{HistoryRepository, VcsPreference},
+    history::{HistoryRepository, MAX_HISTORY_LIMIT, VcsPreference},
     render::{RenderManager, cache_info, clear_cache},
 };
 
@@ -61,7 +61,7 @@ struct ViewArgs {
     #[arg(long)]
     at: Option<String>,
 
-    /// Maximum first-parent revisions to inspect
+    /// Maximum matching revisions to load
     #[arg(long, default_value_t = 30)]
     limit: usize,
 
@@ -113,8 +113,8 @@ async fn main() -> Result<()> {
 }
 
 async fn view(args: ViewArgs) -> Result<()> {
-    if !(1..=500).contains(&args.limit) {
-        bail!("--limit must be between 1 and 500");
+    if !(1..=MAX_HISTORY_LIMIT).contains(&args.limit) {
+        bail!("--limit must be between 1 and {MAX_HISTORY_LIMIT}");
     }
     let cwd = std::env::current_dir().context("read current directory")?;
     let discovery_start = args
@@ -144,7 +144,8 @@ async fn view(args: ViewArgs) -> Result<()> {
             typst: args.typst,
         },
     )?;
-    let history = repository.history(args.at.as_deref(), args.limit, &target.history_paths)?;
+    let history_start = repository.resolve_start(args.at.as_deref())?;
+    let history = repository.history(Some(&history_start), args.limit, &target.history_paths)?;
     if history.first_parent_keys.is_empty() {
         bail!("no matching first-parent revisions found");
     }
@@ -160,7 +161,15 @@ async fn view(args: ViewArgs) -> Result<()> {
     if let Some(parent) = history.first_parent_keys.get(1) {
         render.queue(parent).await?;
     }
-    server::serve(repository.info.clone(), history, render, !args.no_open).await
+    server::serve(
+        repository,
+        history_start,
+        history,
+        render,
+        args.limit,
+        !args.no_open,
+    )
+    .await
 }
 
 fn cache(command: CacheCommand) -> Result<()> {
