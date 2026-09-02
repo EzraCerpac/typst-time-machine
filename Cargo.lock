@@ -3337,6 +3337,7 @@ dependencies = [
  "clap",
  "directories",
  "futures-util",
+ "image",
  "libc",
  "open",
  "rand 0.10.2",

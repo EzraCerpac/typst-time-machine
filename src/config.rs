@@ -24,6 +24,8 @@ pub struct TargetConfig {
     #[serde(default)]
     pub history_paths: Vec<PathBuf>,
     #[serde(default)]
+    pub missing_figure_roots: Vec<PathBuf>,
+    #[serde(default)]
     pub font_paths: Vec<PathBuf>,
     #[serde(default)]
     pub inputs: BTreeMap<String, String>,
@@ -38,6 +40,7 @@ pub struct ResolveRequest {
     pub target: Option<String>,
     pub root: Option<PathBuf>,
     pub history_paths: Vec<PathBuf>,
+    pub missing_figure_roots: Vec<PathBuf>,
     pub font_paths: Vec<PathBuf>,
     pub inputs: Vec<String>,
     pub package_path: Option<PathBuf>,
@@ -51,6 +54,7 @@ pub struct ResolvedTarget {
     pub entry: PathBuf,
     pub root: PathBuf,
     pub history_paths: Vec<PathBuf>,
+    pub missing_figure_roots: Vec<PathBuf>,
     pub font_paths: Vec<PathBuf>,
     pub inputs: BTreeMap<String, String>,
     pub package_path: Option<PathBuf>,
@@ -138,6 +142,37 @@ pub fn resolve(repository_root: &Path, request: ResolveRequest) -> Result<Resolv
         .map(|path| confined_relative_path(repository_root, repository_root, &path, "history path"))
         .collect::<Result<Vec<_>>>()?;
 
+    let missing_figure_inputs = if request.missing_figure_roots.is_empty() {
+        configured.missing_figure_roots
+    } else {
+        request.missing_figure_roots
+    };
+    if request.typst.is_some() && !missing_figure_inputs.is_empty() {
+        bail!("missing figure roots cannot be used with --typst");
+    }
+    let mut missing_figure_roots = missing_figure_inputs
+        .into_iter()
+        .map(|path| {
+            if path.as_os_str().is_empty() {
+                bail!("missing figure root cannot be empty");
+            }
+            if path.is_absolute() {
+                bail!(
+                    "missing figure root must be repository-relative: {}",
+                    path.display()
+                );
+            }
+            confined_relative_path(
+                repository_root,
+                repository_root,
+                &path,
+                "missing figure root",
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    missing_figure_roots.sort();
+    missing_figure_roots.dedup();
+
     let fonts_from_cli = !request.font_paths.is_empty();
     let font_inputs = if request.font_paths.is_empty() {
         configured.font_paths
@@ -191,6 +226,7 @@ pub fn resolve(repository_root: &Path, request: ResolveRequest) -> Result<Resolv
             .expect("confined root")
             .to_path_buf(),
         history_paths,
+        missing_figure_roots,
         font_paths,
         inputs,
         package_path,
@@ -318,6 +354,7 @@ inputs = { variant = "base" }
                 target: None,
                 root: None,
                 history_paths: Vec::new(),
+                missing_figure_roots: Vec::new(),
                 font_paths: Vec::new(),
                 inputs: vec!["variant=compact".to_owned()],
                 package_path: None,
@@ -328,6 +365,132 @@ inputs = { variant = "base" }
         assert_eq!(target.name.as_deref(), Some("resume"));
         assert_eq!(target.entry, Path::new("applications/resume.typ"));
         assert_eq!(target.inputs["variant"], "compact");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_figure_roots_use_cli_precedence_and_normalize() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::create_dir(root.join("applications"))?;
+        fs::write(root.join("applications/resume.typ"), "= Resume\n")?;
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+default_target = "resume"
+
+[targets.resume]
+entry = "applications/resume.typ"
+missing_figure_roots = ["z", "figures/../figures/generated", "z"]
+"#,
+        )?;
+
+        let target = resolve(
+            root,
+            ResolveRequest {
+                cwd: root.to_path_buf(),
+                entry: None,
+                target: None,
+                root: None,
+                history_paths: Vec::new(),
+                missing_figure_roots: vec![
+                    PathBuf::from("z/../z"),
+                    PathBuf::from("a"),
+                    PathBuf::from("a"),
+                ],
+                font_paths: Vec::new(),
+                inputs: Vec::new(),
+                package_path: None,
+                package_cache_path: None,
+                typst: None,
+            },
+        )?;
+        assert_eq!(
+            target.missing_figure_roots,
+            [PathBuf::from("a"), PathBuf::from("z")]
+        );
+
+        let configured = resolve(
+            root,
+            ResolveRequest {
+                cwd: root.to_path_buf(),
+                entry: None,
+                target: None,
+                root: None,
+                history_paths: Vec::new(),
+                missing_figure_roots: Vec::new(),
+                font_paths: Vec::new(),
+                inputs: Vec::new(),
+                package_path: None,
+                package_cache_path: None,
+                typst: None,
+            },
+        )?;
+        assert_eq!(
+            configured.missing_figure_roots,
+            [PathBuf::from("figures/generated"), PathBuf::from("z")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_missing_figure_roots() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::write(root.join("main.typ"), "= Main\n")?;
+
+        for (path, message) in [
+            (root.join("figures"), "repository-relative"),
+            (PathBuf::from("../outside"), "escapes repository"),
+        ] {
+            let error = resolve(
+                root,
+                ResolveRequest {
+                    cwd: root.to_path_buf(),
+                    entry: Some(PathBuf::from("main.typ")),
+                    target: None,
+                    root: None,
+                    history_paths: Vec::new(),
+                    missing_figure_roots: vec![path],
+                    font_paths: Vec::new(),
+                    inputs: Vec::new(),
+                    package_path: None,
+                    package_cache_path: None,
+                    typst: None,
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(message), "{error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_missing_figure_roots_with_external_typst() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        fs::write(root.join("main.typ"), "= Main\n")?;
+        let error = resolve(
+            root,
+            ResolveRequest {
+                cwd: root.to_path_buf(),
+                entry: Some(PathBuf::from("main.typ")),
+                target: None,
+                root: None,
+                history_paths: Vec::new(),
+                missing_figure_roots: vec![PathBuf::from("figures/generated")],
+                font_paths: Vec::new(),
+                inputs: Vec::new(),
+                package_path: None,
+                package_cache_path: None,
+                typst: Some(PathBuf::from("typst")),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "missing figure roots cannot be used with --typst"
+        );
         Ok(())
     }
 }

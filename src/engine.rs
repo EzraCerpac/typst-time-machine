@@ -29,6 +29,10 @@ use typst_kit::{
 use typst_layout::PagedDocument;
 use typst_svg::SvgOptions;
 
+#[path = "placeholder.rs"]
+mod placeholder;
+pub use placeholder::placeholder_fingerprint;
+
 pub const EMBEDDED_TYPST_VERSION: &str = "0.15.1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -40,6 +44,7 @@ pub struct EngineConfig {
     pub font_paths: Vec<PathBuf>,
     pub package_path: Option<PathBuf>,
     pub package_cache_path: Option<PathBuf>,
+    pub missing_figure_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -65,6 +70,7 @@ pub enum EngineReply {
     Compiled {
         pages: Vec<EnginePage>,
         dependencies: Vec<String>,
+        placeholder_files: Vec<String>,
         retained_bytes: u64,
     },
     EntrypointMissing {
@@ -143,6 +149,7 @@ struct Engine {
 struct CachedRevision {
     pages: Vec<(usize, String)>,
     dependencies: Vec<String>,
+    placeholder_files: Vec<String>,
 }
 
 impl Engine {
@@ -214,7 +221,12 @@ impl Engine {
                 env!("CARGO_PKG_VERSION")
             ))),
         );
-        let loader = GitLoader::new(config.git_dir, config.root, packages)?;
+        let loader = GitLoader::new(
+            config.git_dir,
+            config.root,
+            config.missing_figure_roots,
+            packages,
+        )?;
         let world = EngineWorld {
             library,
             fonts: font_store,
@@ -262,6 +274,7 @@ impl Engine {
                     })
                     .collect(),
                 dependencies: cached.dependencies.clone(),
+                placeholder_files: cached.placeholder_files.clone(),
                 retained_bytes: self.retained_bytes(),
             });
         }
@@ -340,6 +353,7 @@ impl Engine {
             paths.dedup();
             paths
         };
+        let placeholder_files = self.world.files.loader().placeholder_files();
         self.revision_results.insert(
             revision_key,
             CachedRevision {
@@ -348,11 +362,13 @@ impl Engine {
                     .map(|page| (page.number, page.hash.clone()))
                     .collect(),
                 dependencies: dependencies.clone(),
+                placeholder_files: placeholder_files.clone(),
             },
         );
         Ok(EngineReply::Compiled {
             pages,
             dependencies,
+            placeholder_files,
             retained_bytes: self.retained_bytes(),
         })
     }
@@ -435,22 +451,40 @@ struct TreeEntry {
 struct GitLoader {
     git_dir: PathBuf,
     project_root: PathBuf,
+    missing_figure_roots: Vec<PathBuf>,
     entries: HashMap<PathBuf, TreeEntry>,
     packages: SystemPackages,
     batch: Mutex<GitBatch>,
     blobs: Mutex<HashMap<String, Bytes>>,
+    placeholder_files: Mutex<HashSet<String>>,
 }
 
 impl GitLoader {
-    fn new(git_dir: PathBuf, project_root: PathBuf, packages: SystemPackages) -> Result<Self> {
+    fn new(
+        git_dir: PathBuf,
+        project_root: PathBuf,
+        missing_figure_roots: Vec<PathBuf>,
+        packages: SystemPackages,
+    ) -> Result<Self> {
         let batch = GitBatch::spawn(&git_dir)?;
+        let mut roots = Vec::new();
+        for root in missing_figure_roots {
+            let root = lexical_join(Path::new(""), &root).with_context(|| {
+                format!("missing figure root escapes repository: {}", root.display())
+            })?;
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
         Ok(Self {
             git_dir,
             project_root,
+            missing_figure_roots: roots,
             entries: HashMap::new(),
             packages,
             batch: Mutex::new(batch),
             blobs: Mutex::new(HashMap::new()),
+            placeholder_files: Mutex::new(HashSet::new()),
         })
     }
 
@@ -490,6 +524,10 @@ impl GitLoader {
             entries.insert(PathBuf::from(path), TreeEntry { mode, kind, oid });
         }
         self.entries = entries;
+        self.placeholder_files
+            .lock()
+            .expect("placeholder file cache poisoned")
+            .clear();
         Ok(())
     }
 
@@ -511,6 +549,24 @@ impl GitLoader {
             .lock()
             .map(|blobs| blobs.values().map(|bytes| bytes.len() as u64).sum())
             .unwrap_or(0)
+    }
+
+    fn placeholder_files(&self) -> Vec<String> {
+        let mut files = self
+            .placeholder_files
+            .lock()
+            .expect("placeholder file cache poisoned")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        files.sort();
+        files
+    }
+
+    fn allows_placeholder(&self, path: &Path) -> bool {
+        self.missing_figure_roots
+            .iter()
+            .any(|root| path.starts_with(root))
     }
 
     fn resolve_project_path(&self, virtual_path: &Path) -> Result<PathBuf, FileError> {
@@ -608,7 +664,32 @@ impl FileLoader for GitLoader {
     fn load(&self, id: FileId) -> FileResult<Bytes> {
         match id.root() {
             VirtualRoot::Project => {
-                let path = self.resolve_project_path(Path::new(id.vpath().get_without_slash()))?;
+                let virtual_path = Path::new(id.vpath().get_without_slash());
+                let path = match self.resolve_project_path(virtual_path) {
+                    Ok(path) => path,
+                    Err(error @ FileError::NotFound(_)) => {
+                        let repo_path = lexical_join(&self.project_root, virtual_path)
+                            .and_then(|path| lexical_join(Path::new(""), &path));
+                        let Some(repo_path) = repo_path else {
+                            return Err(error);
+                        };
+                        if self.first_special_prefix(&repo_path).is_some() {
+                            return Err(error);
+                        }
+                        let Some(bytes) = placeholder::bytes_for_path(&repo_path)
+                            .filter(|_| self.allows_placeholder(&repo_path))
+                        else {
+                            return Err(error);
+                        };
+                        let logical_path = repo_path.to_string_lossy().into_owned();
+                        self.placeholder_files
+                            .lock()
+                            .expect("placeholder file cache poisoned")
+                            .insert(logical_path);
+                        return Ok(Bytes::new(bytes.to_vec()));
+                    }
+                    Err(error) => return Err(error),
+                };
                 let entry = self
                     .entries
                     .get(&path)
@@ -769,6 +850,7 @@ mod tests {
             font_paths: Vec::new(),
             package_path: None,
             package_cache_path: Some(temp.path().join("packages")),
+            missing_figure_roots: Vec::new(),
         })?;
 
         let render_a = temp.path().join("a");
@@ -815,6 +897,292 @@ mod tests {
         assert!(!String::from_utf8_lossy(&first).contains("Dirty working copy"));
         assert!(engine.retained_bytes() > 0);
         Ok(())
+    }
+
+    #[test]
+    fn missing_pdf_supports_read_then_image_and_reports_placeholder() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::create_dir_all(repository.join("figures/generated"))?;
+        fs::write(
+            repository.join("main.typ"),
+            "#let bytes = read(\"figures/generated/missing.pdf\", encoding: none)\n#assert(bytes.len() > 0)\n#image(\"figures/generated/missing.pdf\", width: 120pt)\n",
+        )?;
+        commit_all(&repository, "missing figure")?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+        let EngineReply::Compiled {
+            dependencies,
+            placeholder_files,
+            ..
+        } = engine.compile(&revision, 1, &temp.path().join("render"))
+        else {
+            bail!("missing PDF did not compile with placeholders");
+        };
+        assert!(dependencies.contains(&"figures/generated/missing.pdf".to_owned()));
+        assert_eq!(placeholder_files, ["figures/generated/missing.pdf"]);
+        Ok(())
+    }
+
+    #[test]
+    fn strict_mode_keeps_missing_pdf_fatal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/missing.pdf\", width: 120pt)\n",
+        )?;
+        commit_all(&repository, "strict missing figure")?;
+
+        let mut engine = test_engine(&repository, Vec::new())?;
+        let revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+        assert!(matches!(
+            engine.compile(&revision, 1, &temp.path().join("render")),
+            EngineReply::Error { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn tracked_figure_wins_over_placeholder_mode() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::create_dir_all(repository.join("figures/generated"))?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/real.svg\", width: 120pt)\n",
+        )?;
+        fs::write(
+            repository.join("figures/generated/real.svg"),
+            placeholder::bytes_for_path(Path::new("real.svg")).unwrap(),
+        )?;
+        commit_all(&repository, "tracked figure")?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+        let EngineReply::Compiled {
+            placeholder_files, ..
+        } = engine.compile(&revision, 1, &temp.path().join("render"))
+        else {
+            bail!("tracked figure did not compile");
+        };
+        assert!(placeholder_files.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_non_image_file_stays_fatal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::write(
+            repository.join("main.typ"),
+            "#let bytes = read(\"figures/generated/missing.json\", encoding: none)\n#assert(bytes.len() > 0)\n",
+        )?;
+        commit_all(&repository, "missing data")?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+        assert!(matches!(
+            engine.compile(&revision, 1, &temp.path().join("render")),
+            EngineReply::Error { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn placeholder_mode_keeps_unallowed_and_corrupt_figures_fatal() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"other/missing.pdf\", width: 120pt)\n",
+        )?;
+        commit_all(&repository, "missing figure outside allowed root")?;
+        let outside_revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+
+        fs::create_dir_all(repository.join("figures/generated"))?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/corrupt.pdf\", width: 120pt)\n",
+        )?;
+        fs::write(
+            repository.join("figures/generated/corrupt.pdf"),
+            b"not a PDF",
+        )?;
+        commit_all(&repository, "tracked corrupt figure")?;
+        let corrupt_revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        assert!(matches!(
+            engine.compile(&outside_revision, 1, &temp.path().join("outside")),
+            EngineReply::Error { .. }
+        ));
+        assert!(matches!(
+            engine.compile(&corrupt_revision, 2, &temp.path().join("corrupt")),
+            EngineReply::Error { .. }
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracked_broken_symlink_is_not_replaced() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir_all(repository.join("figures/generated"))?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/broken.pdf\", width: 120pt)\n",
+        )?;
+        symlink(
+            "missing.pdf",
+            repository.join("figures/generated/broken.pdf"),
+        )?;
+        commit_all(&repository, "tracked broken symlink")?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+        assert!(matches!(
+            engine.compile(&revision, 1, &temp.path().join("render")),
+            EngineReply::Error { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn placeholder_hits_reset_when_a_later_revision_adds_the_figure() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::create_dir_all(repository.join("figures/generated"))?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/figure.svg\", width: 120pt)\n",
+        )?;
+        commit_all(&repository, "missing figure")?;
+        let missing_revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+
+        fs::write(
+            repository.join("figures/generated/figure.svg"),
+            placeholder::bytes_for_path(Path::new("figure.svg")).unwrap(),
+        )?;
+        commit_all(&repository, "add figure")?;
+        let real_revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let EngineReply::Compiled {
+            placeholder_files: missing,
+            ..
+        } = engine.compile(&missing_revision, 1, &temp.path().join("missing"))
+        else {
+            bail!("missing revision did not compile");
+        };
+        let EngineReply::Compiled {
+            placeholder_files: real,
+            ..
+        } = engine.compile(&real_revision, 2, &temp.path().join("real"))
+        else {
+            bail!("real revision did not compile");
+        };
+        assert_eq!(missing, ["figures/generated/figure.svg"]);
+        assert!(real.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn identical_missing_figure_is_reported_in_each_revision() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::create_dir_all(repository.join("figures/generated"))?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/figure.svg\", width: 120pt)\n",
+        )?;
+        commit_all(&repository, "missing figure")?;
+        let first_revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+
+        fs::write(repository.join("unrelated.txt"), "unrelated change\n")?;
+        commit_all(&repository, "unrelated change")?;
+        let second_revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let EngineReply::Compiled {
+            placeholder_files: first,
+            ..
+        } = engine.compile(&first_revision, 1, &temp.path().join("first"))
+        else {
+            bail!("first revision did not compile");
+        };
+        let EngineReply::Compiled {
+            placeholder_files: second,
+            ..
+        } = engine.compile(&second_revision, 2, &temp.path().join("second"))
+        else {
+            bail!("second revision did not compile");
+        };
+        assert_eq!(first, ["figures/generated/figure.svg"]);
+        assert_eq!(second, ["figures/generated/figure.svg"]);
+        Ok(())
+    }
+
+    #[test]
+    fn all_supported_figure_extensions_compile_with_placeholders() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repository = temp.path().join("repo");
+        fs::create_dir(&repository)?;
+        run_git(&repository, &["init", "-q"])?;
+        fs::write(
+            repository.join("main.typ"),
+            "#image(\"figures/generated/missing.pdf\", width: 20pt)\n#image(\"figures/generated/missing.svg\", width: 20pt)\n#image(\"figures/generated/missing.svgz\", width: 20pt)\n#image(\"figures/generated/missing.png\", width: 20pt)\n#image(\"figures/generated/missing.jpg\", width: 20pt)\n#image(\"figures/generated/missing.jpeg\", width: 20pt)\n#image(\"figures/generated/missing.gif\", width: 20pt)\n#image(\"figures/generated/missing.webp\", width: 20pt)\n",
+        )?;
+        commit_all(&repository, "all missing figures")?;
+
+        let mut engine = test_engine(&repository, vec![PathBuf::from("figures/generated")])?;
+        let revision = git_text(&repository, &["rev-parse", "HEAD"])?;
+        let EngineReply::Compiled {
+            placeholder_files, ..
+        } = engine.compile(&revision, 1, &temp.path().join("render"))
+        else {
+            bail!("supported missing figure formats did not compile");
+        };
+        assert_eq!(placeholder_files.len(), 8);
+        assert!(
+            placeholder_files
+                .iter()
+                .all(|path| path.starts_with("figures/generated/missing."))
+        );
+        Ok(())
+    }
+
+    fn test_engine(repository: &Path, missing_figure_roots: Vec<PathBuf>) -> Result<Engine> {
+        let git_dir = PathBuf::from(git_text(repository, &["rev-parse", "--absolute-git-dir"])?);
+        Engine::new(EngineConfig {
+            git_dir,
+            entry: PathBuf::from("main.typ"),
+            root: PathBuf::new(),
+            inputs: BTreeMap::new(),
+            font_paths: Vec::new(),
+            package_path: None,
+            package_cache_path: Some(repository.join("packages")),
+            missing_figure_roots,
+        })
     }
 
     fn commit_all(repository: &Path, message: &str) -> Result<()> {
