@@ -51,6 +51,8 @@ pub struct RenderStatus {
     pub render_id: Option<String>,
     #[serde(default)]
     pub pages: Vec<PageArtifact>,
+    #[serde(default)]
+    pub placeholder_files: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -69,6 +71,8 @@ pub struct CacheManifest {
     pub entry: PathBuf,
     pub root: PathBuf,
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub placeholder_files: Vec<String>,
     pub pages: Vec<PageArtifact>,
 }
 
@@ -583,10 +587,16 @@ impl RenderManager {
             EngineReply::Compiled {
                 pages,
                 dependencies,
+                placeholder_files,
                 ..
             } => {
-                let manifest =
-                    self.publish_embedded_pages(&revision, staging.path(), pages, dependencies)?;
+                let manifest = self.publish_embedded_pages(
+                    &revision,
+                    staging.path(),
+                    pages,
+                    dependencies,
+                    placeholder_files,
+                )?;
                 Ok(RenderOutcome::Ready(manifest))
             }
             EngineReply::EntrypointMissing { message, .. } => {
@@ -606,6 +616,7 @@ impl RenderManager {
             font_paths: self.target.font_paths.clone(),
             package_path: self.target.package_path.clone(),
             package_cache_path: self.target.package_cache_path.clone(),
+            missing_figure_roots: self.target.missing_figure_roots.clone(),
         }
     }
 
@@ -757,7 +768,7 @@ impl RenderManager {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        self.publish_manifest(revision, dependencies, pages)
+        self.publish_manifest(revision, dependencies, Vec::new(), pages)
     }
 
     fn publish_embedded_pages(
@@ -766,6 +777,7 @@ impl RenderManager {
         staging: &Path,
         engine_pages: Vec<EnginePage>,
         dependencies: Vec<String>,
+        placeholder_files: Vec<String>,
     ) -> Result<CacheManifest> {
         let pages = engine_pages
             .into_iter()
@@ -792,7 +804,7 @@ impl RenderManager {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        self.publish_manifest(revision, dependencies, pages)
+        self.publish_manifest(revision, dependencies, placeholder_files, pages)
     }
 
     fn publish_blob(&self, hash: &str, bytes: &[u8]) -> Result<()> {
@@ -816,6 +828,7 @@ impl RenderManager {
         &self,
         revision: &Revision,
         dependencies: Vec<String>,
+        placeholder_files: Vec<String>,
         pages: Vec<PageArtifact>,
     ) -> Result<CacheManifest> {
         let render_id = self.render_id(revision);
@@ -827,6 +840,7 @@ impl RenderManager {
             entry: self.target.entry.clone(),
             root: self.target.root.clone(),
             dependencies,
+            placeholder_files,
             pages,
         };
         let render_root = self.cache_root.join("renders");
@@ -881,6 +895,13 @@ impl RenderManager {
         }
         for path in &self.target.font_paths {
             hash.update(path.as_os_str().as_encoded_bytes());
+        }
+        for path in &self.target.missing_figure_roots {
+            hash.update(b"missing-figure-root\0");
+            hash.update(path.as_os_str().as_encoded_bytes());
+        }
+        if !self.target.missing_figure_roots.is_empty() {
+            hash.update(crate::engine::placeholder_fingerprint());
         }
         if let Some(path) = &self.target.package_path {
             hash.update(path.as_os_str().as_encoded_bytes());
@@ -938,6 +959,7 @@ impl RenderManager {
             message,
             render_id: None,
             pages: Vec::new(),
+            placeholder_files: Vec::new(),
         };
         statuses.insert(key.to_owned(), status.clone());
         let _ = self.events.send(RenderEvent { status });
@@ -954,6 +976,7 @@ impl RenderManager {
             message,
             render_id: None,
             pages: Vec::new(),
+            placeholder_files: Vec::new(),
         };
         statuses.insert(key.to_owned(), status.clone());
         let _ = self.events.send(RenderEvent { status });
@@ -973,6 +996,7 @@ impl RenderManager {
             message: None,
             render_id: Some(manifest.render_id),
             pages: manifest.pages,
+            placeholder_files: manifest.placeholder_files,
         };
         statuses.insert(key.to_owned(), status.clone());
         let _ = self.events.send(RenderEvent { status });

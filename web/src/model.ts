@@ -18,6 +18,7 @@ export interface RenderStatus {
   message?: string;
   render_id?: string;
   pages: PageArtifact[];
+  placeholder_files: string[];
 }
 
 export interface Revision {
@@ -50,6 +51,7 @@ export interface Session {
     history_paths: string[];
     font_paths: string[];
     inputs: Record<string, string>;
+    missing_figure_roots: string[];
     package_path?: string;
     package_cache_path?: string;
     typst?: string;
@@ -392,7 +394,7 @@ export function phaseLabel(status: RenderStatus | undefined): string {
     case "compiling":
       return "Typesetting";
     case "ready":
-      return `${status.pages.length} page${status.pages.length === 1 ? "" : "s"}`;
+      return readyLabel(status);
     case "entrypoint_missing":
       return "No document";
     case "error":
@@ -400,6 +402,16 @@ export function phaseLabel(status: RenderStatus | undefined): string {
     default:
       return "Not rendered";
   }
+}
+
+export function readyLabel(status: RenderStatus): string {
+  return `${status.pages.length} page${status.pages.length === 1 ? "" : "s"}`;
+}
+
+export function placeholderWarning(status: RenderStatus | undefined): string {
+  const count = status?.placeholder_files?.length ?? 0;
+  if (count === 0) return "";
+  return `${count} missing figure${count === 1 ? "" : "s"} substituted`;
 }
 
 export function layoutRevisionGraph(revisions: Revision[], newestFirstKeys: string[]): GraphLayout {

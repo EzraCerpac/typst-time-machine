@@ -69,6 +69,10 @@ struct ViewArgs {
     #[arg(long = "history-path")]
     history_paths: Vec<PathBuf>,
 
+    /// Allow missing figures below this repository-relative path (bundled compiler only)
+    #[arg(long = "missing-figure-root")]
+    missing_figure_roots: Vec<PathBuf>,
+
     /// Typst sys.input value as key=value
     #[arg(long = "input")]
     inputs: Vec<String>,
@@ -137,6 +141,7 @@ async fn view(args: ViewArgs) -> Result<()> {
             target: args.target,
             root: args.root,
             history_paths: args.history_paths,
+            missing_figure_roots: args.missing_figure_roots,
             font_paths: args.font_paths,
             inputs: args.inputs,
             package_path: args.package_path,

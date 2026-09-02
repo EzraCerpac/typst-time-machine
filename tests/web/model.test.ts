@@ -8,6 +8,8 @@ import {
   outputsMatch,
   pageRelation,
   phaseLabel,
+  placeholderWarning,
+  readyLabel,
   reconcileHistorySelection,
   selectionForAlignedPair,
   shortId,
@@ -26,6 +28,7 @@ function ready(hashes: string[]): RenderStatus {
       file: `page-${index + 1}.svg`,
       hash,
     })),
+    placeholder_files: [],
   };
 }
 
@@ -165,7 +168,20 @@ describe("visual comparison model", () => {
 
   test("keeps labels concise", () => {
     expect(shortId("1234567890")).toBe("12345678");
+    expect(readyLabel(ready(["a", "b"]))).toBe("2 pages");
     expect(phaseLabel(ready(["a", "b"]))).toBe("2 pages");
+  });
+
+  test("reports singular and plural placeholder warnings", () => {
+    const one = { ...ready(["a"]), placeholder_files: ["figures/generated/a.pdf"] };
+    const many = {
+      ...ready(["a"]),
+      placeholder_files: ["figures/generated/a.pdf", "figures/generated/b.pdf"],
+    };
+
+    expect(placeholderWarning(ready(["a"]))).toBe("");
+    expect(placeholderWarning(one)).toBe("1 missing figure substituted");
+    expect(placeholderWarning(many)).toBe("2 missing figures substituted");
   });
 
   test("keeps page indexes valid across revisions without document output", () => {

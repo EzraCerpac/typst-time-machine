@@ -5,6 +5,7 @@ import {
   layoutRevisionGraph,
   outputsMatch,
   phaseLabel,
+  placeholderWarning,
   reconcileHistorySelection,
   selectionForAlignedPair,
   shortId,
@@ -123,6 +124,17 @@ function flushPendingRenderStatuses(update: boolean) {
 
 function renderShell() {
   const repoName = session.repository.root.split("/").filter(Boolean).at(-1) ?? "repository";
+  const missingFigureRoots = session.target.missing_figure_roots ?? [];
+  const sessionWarning = missingFigureRoots.length > 0
+    ? `<p
+        class="session-warning"
+        role="note"
+        title="${escapeHtml(`Configured missing-figure roots:\n${missingFigureRoots.join("\n")}`)}"
+      >
+        <strong>Approximate render</strong>
+        <span>Missing figures use fixed 8:5 placeholders. Page breaks and comparisons are approximate.</span>
+      </p>`
+    : "";
   root.innerHTML = `
     <header class="masthead">
       <div class="brand">
@@ -132,6 +144,7 @@ function renderShell() {
           <h1>${escapeHtml(session.target.entry)}</h1>
         </div>
       </div>
+      ${sessionWarning}
       <div class="repo-facts">
         <span class="vcs">${session.repository.kind}</span>
         <strong>${escapeHtml(repoName)}</strong>
@@ -553,22 +566,63 @@ function patchHistoryRevision(revision: Revision) {
         const unchanged = outputsMatch(revision.render, olderKey ? revisionByKey(olderKey).render : undefined);
         const metadata = element.querySelector<HTMLElement>(".frame-meta");
         if (metadata) {
-          metadata.textContent = `${shortId(revision.commit_id)} · ${
-            unchanged ? "same output" : phaseLabel(revision.render)
-          }`;
+          metadata.innerHTML = `${escapeHtml(shortId(revision.commit_id))} · ${renderStatusLabel(
+            revision.render,
+            unchanged,
+          )}`;
         }
       }
       const treeMetadata = element.querySelector<HTMLElement>(".tree-meta");
       if (treeMetadata) {
-        treeMetadata.textContent = `${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}`;
+        treeMetadata.innerHTML = `${escapeHtml(shortId(revision.commit_id))} · ${renderStatusLabel(
+          revision.render,
+        )}`;
       }
     });
   root
     .querySelectorAll<HTMLElement>(`[data-ready-key="${revision.key}"]`)
     .forEach((segment) => {
       segment.dataset.phase = revision.render?.phase ?? "idle";
-      segment.title = `${revision.subject || "(no description)"} · ${phaseLabel(revision.render)}`;
+      segment.dataset.placeholder = String(hasPlaceholders(revision.render));
+      segment.title = readinessLabel(revision);
     });
+}
+
+function hasPlaceholders(status: RenderStatus | undefined): boolean {
+  return status?.phase === "ready" && (status.placeholder_files?.length ?? 0) > 0;
+}
+
+function placeholderCountLabel(status: RenderStatus | undefined): string {
+  const count = status?.placeholder_files?.length ?? 0;
+  return `${count} placeholder${count === 1 ? "" : "s"}`;
+}
+
+function renderStatusLabel(status: RenderStatus | undefined, unchanged = false): string {
+  const label = unchanged ? "same output" : phaseLabel(status);
+  if (!hasPlaceholders(status)) return escapeHtml(label);
+  const warning = placeholderWarning(status);
+  return `${escapeHtml(label)} · <span class="placeholder-count" title="${escapeHtml(warning)}">${escapeHtml(
+    placeholderCountLabel(status),
+  )}</span>`;
+}
+
+function readinessLabel(revision: Revision): string {
+  const warning = placeholderWarning(revision.render);
+  return `${revision.subject || "(no description)"} · ${phaseLabel(revision.render)}${warning ? ` · ${warning}` : ""}`;
+}
+
+function placeholderDetails(status: RenderStatus | undefined): string {
+  if (!hasPlaceholders(status)) return "";
+  const warning = placeholderWarning(status);
+  const paths = (status?.placeholder_files ?? [])
+    .map((path) => `<li><code>${escapeHtml(path)}</code></li>`)
+    .join("");
+  return `
+    <details class="placeholder-details">
+      <summary>${escapeHtml(warning)}</summary>
+      <ul>${paths}</ul>
+    </details>
+  `;
 }
 
 function updateComparison() {
@@ -631,8 +685,9 @@ function renderRevisionNote(container: HTMLElement, revision: Revision, letter: 
           ? `<div><dt>Change</dt><dd title="${revision.change_id}">${shortId(revision.change_id)}</dd></div>`
           : ""
       }
-      <div><dt>Render</dt><dd>${phaseLabel(revision.render)}</dd></div>
+      <div><dt>Render</dt><dd>${renderStatusLabel(revision.render)}</dd></div>
     </dl>
+    ${placeholderDetails(revision.render)}
     ${revision.bookmarks.map((name) => `<span class="bookmark">${escapeHtml(name)}</span>`).join("")}
     ${same ? `<p class="same-pin">A and B are this revision.</p>` : ""}
   `;
@@ -676,7 +731,10 @@ function renderTimeline() {
           <span class="sprockets" aria-hidden="true"></span>
           <time>${shortDate(revision.committed_at)}</time>
           <strong>${escapeHtml(revision.subject || "(no description)")}</strong>
-          <span class="frame-meta">${shortId(revision.commit_id)} · ${unchanged ? "same output" : phaseLabel(revision.render)}</span>
+          <span class="frame-meta">${escapeHtml(shortId(revision.commit_id))} · ${renderStatusLabel(
+            revision.render,
+            unchanged,
+          )}</span>
           <span class="frame-state" aria-hidden="true"></span>
         </button>
       `;
@@ -759,7 +817,9 @@ function renderTree(tree: HTMLElement) {
             <strong>${escapeHtml(revision.subject || "(no description)")}</strong>
             <time>${shortDate(revision.committed_at)}</time>
           </span>
-          <span class="tree-meta">${shortId(revision.commit_id)} · ${phaseLabel(revision.render)}</span>
+          <span class="tree-meta">${escapeHtml(shortId(revision.commit_id))} · ${renderStatusLabel(
+            revision.render,
+          )}</span>
         </button>
       `;
     })
@@ -807,7 +867,8 @@ function renderReadinessRail(keys: string[]) {
         return `<span
           data-ready-key="${revision.key}"
           data-phase="${revision.render?.phase ?? "idle"}"
-          title="${escapeHtml(`${revision.subject || "(no description)"} · ${phaseLabel(revision.render)}`)}"
+          data-placeholder="${hasPlaceholders(revision.render)}"
+          title="${escapeHtml(readinessLabel(revision))}"
         ></span>`;
       })
       .join("");
@@ -817,6 +878,8 @@ function renderReadinessRail(keys: string[]) {
     const key = segment.dataset.readyKey;
     const revision = key ? revisionByKey(key) : undefined;
     segment.dataset.phase = revision?.render?.phase ?? "idle";
+    segment.dataset.placeholder = String(hasPlaceholders(revision?.render));
+    if (revision) segment.title = readinessLabel(revision);
     segment.classList.toggle("selected", key === selectedKey);
   });
 }

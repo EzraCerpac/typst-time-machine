@@ -97,6 +97,26 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.session-warning {
+  min-width: 0;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 7px 10px;
+  border-left: 3px solid var(--amber);
+  background: rgb(255 249 235 / 84%);
+  color: var(--graphite-soft);
+  font: 10px/1.35 "SFMono-Regular", Consolas, monospace;
+}
+
+.session-warning strong {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--amber);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .eyebrow {
   margin: 0;
   color: var(--cyan);
@@ -346,6 +366,34 @@ select,
 
 .revision-note dd {
   margin: 0;
+}
+
+.placeholder-count {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.placeholder-details {
+  margin: -8px 0 18px;
+  color: var(--graphite-soft);
+  font: 10px/1.45 "SFMono-Regular", Consolas, monospace;
+}
+
+.placeholder-details summary {
+  color: var(--amber);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.placeholder-details ul {
+  max-height: 150px;
+  margin: 7px 0 0;
+  padding-left: 17px;
+  overflow: auto;
+}
+
+.placeholder-details code {
+  overflow-wrap: anywhere;
 }
 
 .bookmark {
@@ -816,6 +864,10 @@ select,
   background: var(--cyan);
 }
 
+.readiness-rail span[data-phase="ready"][data-placeholder="true"] {
+  background: var(--amber);
+}
+
 .readiness-rail span[data-phase="entrypoint_missing"],
 .readiness-rail span[data-phase="error"] {
   background: var(--danger);
@@ -872,6 +924,10 @@ select,
 .frame-meta {
   color: #afbbbc;
   font: 9px/1.2 "SFMono-Regular", Consolas, monospace;
+}
+
+.frame .placeholder-count {
+  color: #f3c878;
 }
 
 .frame strong {
@@ -1070,6 +1126,10 @@ select,
   color: #dcebed;
 }
 
+.tree-node.selected .placeholder-count {
+  color: #f3d28a;
+}
+
 .tree-node.pinned {
   padding-right: 34px;
 }
@@ -1155,7 +1215,15 @@ select,
 
 @media (max-width: 640px) {
   .masthead {
+    flex-wrap: wrap;
     padding: 14px 16px;
+  }
+
+  .session-warning {
+    order: 3;
+    flex-basis: 100%;
+    max-width: none;
+    margin: 0;
   }
 
   .brand-stamp {

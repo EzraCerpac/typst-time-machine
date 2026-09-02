@@ -64,6 +64,7 @@ ttm view <entry.typ>
   --at <revision>
   --limit <count>
   --history-path <path>
+  --missing-figure-root <dir>       # repeatable, repository-relative
   --input <key=value>
   --font-path <dir>
   --package-path <dir>
@@ -118,11 +119,34 @@ ttm view --target resume
 ```
 
 CLI values override target values. Configuration is optional and never created
-automatically. Without `history_paths`, first-parent and full-tree histories are
-loaded up to `--limit`; byte-identical first-parent output is marked and can be
-collapsed inside the viewer. With `history_paths`, the limit counts matching
-revisions after path filtering. Change the current viewer limit from the history
-dock without restarting; the CLI value remains the next viewer's default.
+automatically. `missing_figure_roots` allows absent figure files only below the
+listed repository-relative roots. A root may be absent from the current tree,
+which is useful when generated figures are intentionally not versioned. The CLI
+list replaces the configured list. TTM recognizes PDF, SVG/SVGZ, PNG, JPEG, GIF,
+and WebP figures.
+
+Without `history_paths`, first-parent and full-tree histories are loaded up to
+`--limit`; byte-identical first-parent output is marked and can be collapsed
+inside the viewer. With `history_paths`, the limit counts matching revisions
+after path filtering. Change the current viewer limit from the history dock
+without restarting; the CLI value remains the next viewer's default.
+
+Missing files are errors by default. To browse this thesis while its generated
+PDF figures are absent, opt in to that one repository subtree:
+
+```sh
+cargo run --release -- view \
+  /Users/ezracerpac/Projects/Thesis/ezra-cerpac/manuscript/main.typ \
+  --vcs jj \
+  --input manuscript-view=prose \
+  --missing-figure-root manuscript/figures/generated
+```
+
+Missing source, non-image data, package, submodule, and LFS files still fail.
+Roots must be repository-relative and cannot escape the repository.
+`--missing-figure-root` cannot be combined with `--typst`. The built-in
+placeholders have a fixed 8:5 ratio, so page breaks and page-to-page comparisons
+are approximate. Each ready revision lists the paths it replaced.
 
 ## Safety and fidelity
 
