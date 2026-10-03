@@ -82,6 +82,27 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, ignoreHTTPSErrors: true });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    const released = new WeakSet();
+    window.holdHeatmap = false;
+    window.pendingHeatmaps = [];
+    window.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        window.workerForTest = this;
+        this.addEventListener("message", event => {
+          if (!window.holdHeatmap || released.has(event)) return;
+          event.stopImmediatePropagation();
+          window.pendingHeatmaps.push(() => {
+            const next = new MessageEvent("message", { data: event.data });
+            released.add(next);
+            this.dispatchEvent(next);
+          });
+        });
+      }
+    };
+  });
   const toggle = page.locator("#playback-toggle");
   const selected = () => page.locator("#revision-slider").inputValue();
   const waitSelected = value => page.waitForFunction(v => document.querySelector("#revision-slider").value === v, value);
@@ -101,6 +122,14 @@ try {
       slider.dispatchEvent(new Event("input", { bubbles: true }));
       slider.dispatchEvent(new Event("change", { bubbles: true }));
     }, value);
+  }
+  const waitHeatmap = () => page.waitForFunction(() => document.querySelector("#stage").dataset.heatmapState === "ready");
+  const waitHeldHeatmap = () => page.waitForFunction(() => window.pendingHeatmaps.length > 0);
+  async function releaseHeatmaps() {
+    await page.evaluate(() => {
+      window.holdHeatmap = false;
+      window.pendingHeatmaps.splice(0).forEach(release => release());
+    });
   }
 
   // Slow render AND slow image: neither may allow a second advancement.
@@ -245,6 +274,82 @@ try {
   for (const client of clients) client.end();
   await waitPaused();
   assert.equal(await toggle.isDisabled(), true);
+
+  // Heat mode must hold each revision until the worker's bitmap is displayed.
+  await load();
+  await page.locator('[data-mode="heatmap"]').click();
+  await waitHeatmap();
+  await page.evaluate(() => { window.holdHeatmap = true; });
+  await toggle.click();
+  await waitHeldHeatmap();
+  await page.waitForTimeout(350);
+  assert.equal(await selected(), "0");
+  assert.equal(await toggle.textContent(), "Pause");
+  await page.evaluate(() => window.pendingHeatmaps.splice(0).forEach(release => release()));
+  await waitSelected("1");
+  await waitHeldHeatmap();
+  await toggle.click(); // Pausing during heatmap calculation must stay paused.
+  await releaseHeatmaps();
+  await waitHeatmap();
+  await page.waitForTimeout(350);
+  assert.equal(await selected(), "1");
+  await toggle.click(); // Resume from the already displayed, cached heatmap.
+  await waitPaused();
+  assert.equal(await selected(), "2");
+  await waitHeatmap();
+  await page.screenshot({ path: join(output, "heatmap-desktop.png"), fullPage: true });
+
+  // A stale worker response cannot ready a later manual selection.
+  await load();
+  await page.locator('[data-mode="heatmap"]').click();
+  await waitHeatmap();
+  await page.evaluate(() => { window.holdHeatmap = true; });
+  await toggle.click();
+  await waitHeldHeatmap();
+  await scrub("1");
+  await page.waitForFunction(() => window.pendingHeatmaps.length >= 2);
+  await page.evaluate(() => window.pendingHeatmaps.shift()());
+  assert.equal(await page.locator("#stage").getAttribute("data-heatmap-state"), "pending");
+  await releaseHeatmaps();
+  await waitHeatmap();
+  await page.waitForTimeout(350);
+  assert.equal(await selected(), "1");
+  assert.equal(await toggle.textContent(), "Play");
+
+  // Worker failures and unavailable pinned renders stop heatmap playback.
+  await load();
+  await page.locator('[data-mode="heatmap"]').click();
+  await waitHeatmap();
+  await page.evaluate(() => { window.holdHeatmap = true; });
+  await toggle.click();
+  await waitHeldHeatmap();
+  await page.evaluate(() => window.workerForTest.dispatchEvent(new ErrorEvent("error", { message: "fixture failure" })));
+  await waitPaused();
+  assert.match(await page.locator("#playback-status").textContent(), /heatmap worker failed/);
+  await releaseHeatmaps();
+  for (const phase of ["error", "entrypoint_missing"]) {
+    await load({ middle: phase }); // Initial pinned A is middle.
+    await page.locator('[data-mode="heatmap"]').click();
+    await toggle.click();
+    await waitPaused();
+    assert.match(await page.locator("#playback-status").textContent(), /needs both rendered pages/);
+  }
+
+  // A bitmap-load failure stops playback, and a corrected asset can be retried.
+  await load();
+  const brokenPinned = status("middle");
+  brokenPinned.render_id = "broken";
+  statuses.set("middle", brokenPinned);
+  for (const client of clients) client.write(`event: render\ndata: ${JSON.stringify({ status: brokenPinned })}\n\n`);
+  await page.locator('[data-mode="heatmap"]').click();
+  await toggle.click();
+  await waitPaused();
+  assert.match(await page.locator("#playback-status").textContent(), /could not calculate heatmap/);
+  sendStatus("middle");
+  await waitHeatmap();
+  await toggle.click();
+  await waitPaused();
+  assert.equal(await selected(), "2");
 
   await load();
   await page.setViewportSize({ width: 390, height: 844 });

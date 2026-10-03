@@ -51,6 +51,7 @@ let mix = 50;
 let collapseUnchanged = false;
 let blinkHeld = false;
 let heatmapGeneration = 0;
+let heatmapWorkerFailed = false;
 let draggingWipe = false;
 let previewGeneration = 0;
 let focusGeneration = 0;
@@ -90,8 +91,12 @@ const focusRequests = new LeadingLatestThrottle<{
 });
 
 worker.addEventListener("error", (event) => {
+  heatmapWorkerFailed = true;
   const label = document.querySelector<HTMLElement>("#heatmap-label");
   if (label) label.textContent = `Could not calculate heatmap: ${event.message}`;
+  if (mode === "heatmap") {
+    playback.failed(session.revisions[selectedB].key, "Playback stopped: heatmap worker failed");
+  }
 });
 
 void boot();
@@ -267,6 +272,9 @@ function bindControls() {
       return;
     }
     scrubSelection.cancel();
+    if (mode === "heatmap" && required<HTMLElement>("#stage").dataset.heatmapState === "error") {
+      required<HTMLElement>("#stage").dataset.comparison = "";
+    }
     playback.start([...visibleHistoryKeys()].reverse(), session.revisions[selectedB].key);
   });
   required<HTMLSelectElement>("#playback-speed").addEventListener("change", (event) => {
@@ -1154,11 +1162,31 @@ function renderStage() {
   ensureStageStructure(stage);
   if (mode === "heatmap") {
     const comparison = `${left ?? "missing"}\0${right ?? "missing"}`;
-    if (left && right && stage.dataset.comparison !== comparison) {
+    if (heatmapWorkerFailed) {
+      required<HTMLElement>("#heatmap-label").textContent = "Could not calculate heatmap. Reload the viewer to retry.";
+      playback.failed(rightRevision.key, "Playback stopped: heatmap worker failed");
+      return;
+    }
+    if (stage.dataset.comparison !== comparison) {
       stage.dataset.comparison = comparison;
+      stage.dataset.heatmapState = "pending";
       const label = required<HTMLElement>("#heatmap-label");
-      label.textContent = "Calculating visual difference…";
-      void buildHeatmap(left, right);
+      label.textContent = left && right ? "Calculating visual difference…" : "Waiting for both revisions…";
+      if (left && right) {
+        void buildHeatmap(left, right);
+      } else {
+        heatmapGeneration += 1;
+      }
+    }
+    const unavailable = [leftRevision, rightRevision].some((revision) =>
+      ["error", "entrypoint_missing"].includes(revision.render?.phase ?? "") ||
+      (revision.render?.phase === "ready" && revision.render.pages.length === 0),
+    );
+    if (unavailable) {
+      required<HTMLElement>("#heatmap-label").textContent = "Heatmap needs both rendered pages.";
+      playback.failed(rightRevision.key, "Playback stopped: heatmap needs both rendered pages");
+    } else if (stage.dataset.heatmapState === "ready" && selectedB === previewedB) {
+      playback.ready(rightRevision.key);
     }
     return;
   }
@@ -1292,18 +1320,21 @@ function setMixFromPointer(event: PointerEvent) {
 
 async function buildHeatmap(leftUrl: string, rightUrl: string) {
   const generation = ++heatmapGeneration;
+  const revisionKey = session.revisions[previewedB].key;
   let left: ImageBitmap;
   let right: ImageBitmap;
   try {
     [left, right] = await Promise.all([loadBitmap(leftUrl), loadBitmap(rightUrl)]);
   } catch (error) {
     if (generation === heatmapGeneration && mode === "heatmap") {
+      required<HTMLElement>("#stage").dataset.heatmapState = "error";
       const label = document.querySelector<HTMLElement>("#heatmap-label");
       if (label) label.textContent = `Could not calculate heatmap: ${String(error)}`;
+      playback.failed(revisionKey, "Playback stopped: could not calculate heatmap");
     }
     return;
   }
-  if (generation !== heatmapGeneration || mode !== "heatmap") {
+  if (generation !== heatmapGeneration || mode !== "heatmap" || heatmapWorkerFailed) {
     left.close();
     right.close();
     return;
@@ -1317,7 +1348,7 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
       total: number;
       generation: number;
     };
-    if (result.generation !== heatmapGeneration || mode !== "heatmap") {
+    if (result.generation !== heatmapGeneration || mode !== "heatmap" || heatmapWorkerFailed) {
       result.bitmap.close();
       return;
     }
@@ -1337,6 +1368,8 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
     }
     const label = document.querySelector<HTMLElement>("#heatmap-label");
     if (label) label.textContent = `${((result.changed / result.total) * 100).toFixed(2)}% pixels differ`;
+    required<HTMLElement>("#stage").dataset.heatmapState = "ready";
+    playback.ready(revisionKey);
   };
   worker.postMessage(
     {
@@ -1390,7 +1423,7 @@ async function previewRevision(index: number) {
   updatePreviewPending();
   preloadNeighborPages();
   if (revision.render?.phase === "ready") {
-    playback.ready(revision.key);
+    if (mode !== "heatmap") playback.ready(revision.key);
   } else {
     playback.failed(revision.key, `Playback stopped: ${phaseLabel(revision.render)}`);
   }
