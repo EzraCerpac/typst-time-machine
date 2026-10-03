@@ -85,6 +85,13 @@ reachable revision tree. Arrow keys scrub the active view. Space temporarily
 shows revision A in Blink mode, and Wipe mode can be dragged directly on the
 document.
 
+Play advances B through the visible history from oldest to newest. It starts at
+the selected revision, or replays from the oldest when B is already at the end.
+The speed selector offers 0.5×, 1×, 2×, and 4×; at 1× each rendered revision stays
+visible for one second. Playback waits for the render and page image before
+advancing. Pause, manual navigation, history changes, hiding the tab, connection
+loss, and render failures stop it. A stays pinned for comparisons.
+
 When inserted or deleted pages shift later page numbers, the viewer uses exact
 rendered-page matches to suggest likely A/B pairs with visible confidence.
 Suggestions never replace the independent page selectors: apply one explicitly,
@@ -182,6 +189,18 @@ Source layout:
 - `src/render.rs`: worker lifecycle, content-addressed cache, render scheduler
 - `src/server.rs`: capability-scoped loopback API and embedded frontend
 - `web/src`: framework-free TypeScript comparison interface
+
+The optional headless playback integration check exercises the built viewer with
+controlled render events and delayed images, and saves desktop/mobile screenshots:
+
+```sh
+bun run build
+portless ttm-playback-check node tests/browser/playback.mjs
+```
+
+It requires an installed Playwright module and Chromium. Set `PLAYWRIGHT_MODULE`
+to its module path and `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to a headless browser
+binary when they are outside the project's module/browser search paths.
 
 The frontend uses direct SVG for document pages. Only the selected pair is
 rasterized for heatmaps, inside a Web Worker. Tinymist partial rendering is not

@@ -17,6 +17,7 @@ import {
   type Session,
 } from "./model";
 import { LatestFrameScheduler, LeadingLatestThrottle } from "./scrubber";
+import { RevisionPlayback } from "./playback";
 
 type CompareMode = "single" | "side" | "blink" | "opacity" | "wipe" | "heatmap";
 
@@ -50,12 +51,18 @@ let mix = 50;
 let collapseUnchanged = false;
 let blinkHeld = false;
 let heatmapGeneration = 0;
+let heatmapWorkerFailed = false;
 let draggingWipe = false;
 let previewGeneration = 0;
 let focusGeneration = 0;
 let historyUpdatePending = false;
 const imagePreloads = new Map<string, Promise<void>>();
+const failedImageUrls = new Set<string>();
 const pendingRenderStatuses = new Map<string, RenderStatus>();
+const playback = new RevisionPlayback(
+  (key) => selectRevision(revisionIndex(key), true, true),
+  (message) => updatePlaybackControls(message),
+);
 const scrubSelection = new LatestFrameScheduler<number>((index) => {
   selectRevision(index, false);
 });
@@ -74,12 +81,22 @@ const focusRequests = new LeadingLatestThrottle<{
       history_mode: focus.historyMode,
       generation: focus.generation,
     }),
+  }).then((response) => {
+    if (!response.ok) throw new Error("Focus request failed");
+  }).catch(() => {
+    if (focus.generation === focusGeneration) {
+      playback.failed(focus.revisionKey, "Playback stopped: could not request render");
+    }
   });
 });
 
 worker.addEventListener("error", (event) => {
+  heatmapWorkerFailed = true;
   const label = document.querySelector<HTMLElement>("#heatmap-label");
   if (label) label.textContent = `Could not calculate heatmap: ${event.message}`;
+  if (mode === "heatmap") {
+    playback.failed(session.revisions[selectedB].key, "Playback stopped: heatmap worker failed");
+  }
 });
 
 void boot();
@@ -223,7 +240,17 @@ function renderShell() {
         </div>
       </div>
       <div class="revision-scrubber">
-        <label for="revision-slider">Travel through revisions</label>
+        <div class="playback-controls">
+          <label for="revision-slider" class="sr-only">Travel through revisions</label>
+          <button id="playback-toggle" type="button" aria-pressed="false" title="Play revisions from oldest to newest; replay from the start at the end">Play</button>
+          <select id="playback-speed" aria-label="Playback speed" title="Time per rendered revision at 1×: one second">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="2">2×</option>
+            <option value="4">4×</option>
+          </select>
+          <span id="playback-status" role="status" aria-live="polite"></span>
+        </div>
         <div class="revision-track">
           <input id="revision-slider" type="range" min="0" max="0" value="0" />
           <div class="readiness-rail" id="readiness-rail" aria-label="Revision render readiness"></div>
@@ -239,12 +266,33 @@ function renderShell() {
 }
 
 function bindControls() {
+  required<HTMLButtonElement>("#playback-toggle").addEventListener("click", () => {
+    if (playback.playing) {
+      playback.stop("Paused");
+      return;
+    }
+    scrubSelection.cancel();
+    if (mode === "heatmap" && required<HTMLElement>("#stage").dataset.heatmapState === "error") {
+      required<HTMLElement>("#stage").dataset.comparison = "";
+    }
+    playback.start([...visibleHistoryKeys()].reverse(), session.revisions[selectedB].key);
+  });
+  required<HTMLSelectElement>("#playback-speed").addEventListener("change", (event) => {
+    playback.setSpeed(Number((event.target as HTMLSelectElement).value));
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) playback.stop("Paused");
+  });
+  window.addEventListener("pagehide", () => playback.stop());
+  required<HTMLInputElement>("#revision-slider").addEventListener("pointerdown", () => playback.stop());
+  required<HTMLInputElement>("#revision-slider").addEventListener("keydown", () => playback.stop());
   required<HTMLFormElement>("#history-limit-form").addEventListener("submit", (event) => {
     event.preventDefault();
     void updateHistoryLimit();
   });
   root.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.addEventListener("click", () => {
+      playback.stop();
       mode = button.dataset.mode as CompareMode;
       renderStage();
       updateModeControls();
@@ -258,6 +306,8 @@ function bindControls() {
     setMix(Number((event.target as HTMLInputElement).value));
   });
   required<HTMLButtonElement>("#pin-a").addEventListener("click", () => {
+    playback.stop();
+    previewGeneration += 1;
     previewedB = selectedB;
     pageB = clampPageIndex(
       pageB,
@@ -269,15 +319,19 @@ function bindControls() {
     pairingAnchor = "right";
     patchPinnedSelection(previous, pinnedA);
     updateComparison();
+    updatePreviewPending();
     focusVisible(true);
+    void previewRevision(selectedB);
   });
   required<HTMLInputElement>("#collapse").addEventListener("change", (event) => {
+    playback.stop();
     collapseUnchanged = (event.target as HTMLInputElement).checked;
     renderTimeline();
     renderRevisionScrubber();
   });
   root.querySelectorAll<HTMLButtonElement>("[data-history-mode]").forEach((button) => {
     button.addEventListener("click", () => {
+      playback.stop();
       historyMode = button.dataset.historyMode as HistoryMode;
       const keys = activeHistoryKeys();
       if (!keys.includes(session.revisions[selectedB].key)) {
@@ -293,6 +347,7 @@ function bindControls() {
     });
   });
   required<HTMLInputElement>("#revision-slider").addEventListener("input", (event) => {
+    playback.stop();
     const keys = [...visibleHistoryKeys()].reverse();
     const key = keys[Number((event.target as HTMLInputElement).value)];
     if (key) scrubSelection.schedule(revisionIndex(key));
@@ -303,6 +358,7 @@ function bindControls() {
     focusVisible(true);
   });
   required<HTMLSelectElement>("#page-a").addEventListener("change", (event) => {
+    playback.stop();
     pageA = Number((event.target as HTMLSelectElement).value);
     pairingAnchor = "left";
     renderStage();
@@ -310,19 +366,25 @@ function bindControls() {
     renderPageRail();
   });
   required<HTMLSelectElement>("#page-b").addEventListener("change", (event) => {
+    playback.stop();
+    previewGeneration += 1;
     pageB = Number((event.target as HTMLSelectElement).value);
     pairingAnchor = "right";
     renderStage();
     renderPagePairing();
     renderPageRail();
+    void previewRevision(selectedB);
   });
   required<HTMLButtonElement>("#apply-pair").addEventListener("click", () => {
+    playback.stop();
     const pair = suggestedPairForCurrentPage();
     const selection = pair ? selectionForAlignedPair(pair) : null;
     if (!selection) return;
+    previewGeneration += 1;
     pageA = selection.pageA;
     pageB = selection.pageB;
     updateComparison();
+    void previewRevision(selectedB);
   });
   const stage = required<HTMLElement>("#stage");
   stage.addEventListener("pointerdown", (event) => {
@@ -372,6 +434,7 @@ function bindControls() {
 }
 
 async function updateHistoryLimit() {
+  playback.stop();
   const form = required<HTMLFormElement>("#history-limit-form");
   const input = required<HTMLInputElement>("#history-limit");
   const button = required<HTMLButtonElement>("#history-limit-form button");
@@ -393,6 +456,7 @@ async function updateHistoryLimit() {
   input.disabled = true;
   button.disabled = true;
   historyUpdatePending = true;
+  updatePlaybackControls();
   status.textContent = `Loading up to ${limit} matching revisions…`;
   try {
     const response = await fetch(`${tokenBase}/api/history`, {
@@ -464,6 +528,7 @@ async function updateHistoryLimit() {
     input.disabled = false;
     button.disabled = false;
     historyUpdatePending = false;
+    updatePlaybackControls();
     flushPendingRenderStatuses(true);
     if (restoreFocus) button.focus();
   }
@@ -488,7 +553,21 @@ function connectEvents() {
   });
   events.onerror = () => {
     document.body.dataset.connection = "lost";
+    playback.stop("Playback stopped: connection lost");
   };
+  events.onopen = () => {
+    delete document.body.dataset.connection;
+    updatePlaybackControls();
+  };
+}
+
+function updatePlaybackControls(message?: string) {
+  const button = root.querySelector<HTMLButtonElement>("#playback-toggle");
+  if (!button) return;
+  button.textContent = playback.playing ? "Pause" : "Play";
+  button.setAttribute("aria-pressed", String(playback.playing));
+  button.disabled = historyUpdatePending || document.body.dataset.connection === "lost" || (!playback.playing && visibleHistoryKeys().length < 2);
+  if (message !== undefined) required<HTMLElement>("#playback-status").textContent = message;
 }
 
 function updateAll() {
@@ -843,6 +922,7 @@ function renderTree(tree: HTMLElement) {
 }
 
 function renderRevisionScrubber(syncControl = true) {
+  updatePlaybackControls();
   const keys = [...visibleHistoryKeys()].reverse();
   const slider = required<HTMLInputElement>("#revision-slider");
   const selectedKey = session.revisions[selectedB].key;
@@ -1047,6 +1127,8 @@ function renderPageRail() {
   }
   rail.querySelectorAll<HTMLButtonElement>(".page-tick").forEach((button) => {
     button.addEventListener("click", () => {
+      playback.stop();
+      previewGeneration += 1;
       const leftIndex = button.dataset.pageA;
       const rightIndex = button.dataset.pageB;
       if (leftIndex == null || rightIndex == null) return;
@@ -1054,6 +1136,7 @@ function renderPageRail() {
       pageB = Number(rightIndex);
       pairingAnchor = "right";
       updateComparison();
+      void previewRevision(selectedB);
     });
   });
 }
@@ -1079,11 +1162,31 @@ function renderStage() {
   ensureStageStructure(stage);
   if (mode === "heatmap") {
     const comparison = `${left ?? "missing"}\0${right ?? "missing"}`;
-    if (left && right && stage.dataset.comparison !== comparison) {
+    if (heatmapWorkerFailed) {
+      required<HTMLElement>("#heatmap-label").textContent = "Could not calculate heatmap. Reload the viewer to retry.";
+      playback.failed(rightRevision.key, "Playback stopped: heatmap worker failed");
+      return;
+    }
+    if (stage.dataset.comparison !== comparison) {
       stage.dataset.comparison = comparison;
+      stage.dataset.heatmapState = "pending";
       const label = required<HTMLElement>("#heatmap-label");
-      label.textContent = "Calculating visual difference…";
-      void buildHeatmap(left, right);
+      label.textContent = left && right ? "Calculating visual difference…" : "Waiting for both revisions…";
+      if (left && right) {
+        void buildHeatmap(left, right);
+      } else {
+        heatmapGeneration += 1;
+      }
+    }
+    const unavailable = [leftRevision, rightRevision].some((revision) =>
+      ["error", "entrypoint_missing"].includes(revision.render?.phase ?? "") ||
+      (revision.render?.phase === "ready" && revision.render.pages.length === 0),
+    );
+    if (unavailable) {
+      required<HTMLElement>("#heatmap-label").textContent = "Heatmap needs both rendered pages.";
+      playback.failed(rightRevision.key, "Playback stopped: heatmap needs both rendered pages");
+    } else if (stage.dataset.heatmapState === "ready" && selectedB === previewedB) {
+      playback.ready(rightRevision.key);
     }
     return;
   }
@@ -1163,7 +1266,7 @@ function patchPageSlot(
   const image = slot.querySelector<HTMLImageElement>("img");
   const status = slot.querySelector<HTMLElement>(".render-status");
   if (!image || !status) return;
-  if (url) {
+  if (url && !failedImageUrls.has(url)) {
     if (image.getAttribute("src") !== url) image.src = url;
     image.hidden = false;
     status.hidden = true;
@@ -1171,13 +1274,14 @@ function patchPageSlot(
   }
   image.hidden = true;
   status.hidden = false;
-  status.className = `render-status ${revision.render?.phase ?? "idle"}`;
+  const imageFailed = Boolean(url && failedImageUrls.has(url));
+  status.className = `render-status ${imageFailed ? "error" : revision.render?.phase ?? "idle"}`;
   const strong = status.querySelector<HTMLElement>("strong");
   const message = status.querySelector<HTMLElement>("p");
-  if (strong) strong.textContent = phaseLabel(revision.render);
+  if (strong) strong.textContent = imageFailed ? "Could not load page image" : phaseLabel(revision.render);
   if (message) {
     message.textContent =
-      revision.render?.message ??
+      (imageFailed ? "Select this revision again to retry." : revision.render?.message) ??
       (revision.render?.phase ? "Preparing this revision…" : `Select revision ${label} to render it.`);
   }
 }
@@ -1216,18 +1320,21 @@ function setMixFromPointer(event: PointerEvent) {
 
 async function buildHeatmap(leftUrl: string, rightUrl: string) {
   const generation = ++heatmapGeneration;
+  const revisionKey = session.revisions[previewedB].key;
   let left: ImageBitmap;
   let right: ImageBitmap;
   try {
     [left, right] = await Promise.all([loadBitmap(leftUrl), loadBitmap(rightUrl)]);
   } catch (error) {
     if (generation === heatmapGeneration && mode === "heatmap") {
+      required<HTMLElement>("#stage").dataset.heatmapState = "error";
       const label = document.querySelector<HTMLElement>("#heatmap-label");
       if (label) label.textContent = `Could not calculate heatmap: ${String(error)}`;
+      playback.failed(revisionKey, "Playback stopped: could not calculate heatmap");
     }
     return;
   }
-  if (generation !== heatmapGeneration || mode !== "heatmap") {
+  if (generation !== heatmapGeneration || mode !== "heatmap" || heatmapWorkerFailed) {
     left.close();
     right.close();
     return;
@@ -1241,7 +1348,7 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
       total: number;
       generation: number;
     };
-    if (result.generation !== heatmapGeneration || mode !== "heatmap") {
+    if (result.generation !== heatmapGeneration || mode !== "heatmap" || heatmapWorkerFailed) {
       result.bitmap.close();
       return;
     }
@@ -1261,6 +1368,8 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
     }
     const label = document.querySelector<HTMLElement>("#heatmap-label");
     if (label) label.textContent = `${((result.changed / result.total) * 100).toFixed(2)}% pixels differ`;
+    required<HTMLElement>("#stage").dataset.heatmapState = "ready";
+    playback.ready(revisionKey);
   };
   worker.postMessage(
     {
@@ -1273,8 +1382,10 @@ async function buildHeatmap(leftUrl: string, rightUrl: string) {
   );
 }
 
-function selectRevision(index: number, recenter = true) {
+function selectRevision(index: number, recenter = true, fromPlayback = false) {
+  if (!fromPlayback) playback.stop();
   if (index < 0 || index >= session.revisions.length) return;
+  previewGeneration += 1;
   const previous = selectedB;
   selectedB = index;
   pairingAnchor = "right";
@@ -1282,7 +1393,7 @@ function selectRevision(index: number, recenter = true) {
   renderRevisionScrubber(recenter);
   updatePreviewPending();
   renderPagePairing();
-  focusVisible();
+  focusVisible(fromPlayback);
   void previewRevision(index);
 }
 
@@ -1290,12 +1401,6 @@ async function previewRevision(index: number) {
   const revision = session.revisions[index];
   const finalPhase = ["ready", "entrypoint_missing", "error"].includes(revision.render?.phase ?? "");
   if (!finalPhase) return;
-  if (index === previewedB) {
-    updateComparison();
-    updatePreviewPending();
-    return;
-  }
-
   const generation = ++previewGeneration;
   const pages = revision.render?.pages.length ?? 0;
   const nextPage = clampPageIndex(pageB, pages);
@@ -1303,8 +1408,11 @@ async function previewRevision(index: number) {
   if (nextUrl) {
     try {
       await preloadImage(nextUrl);
+      failedImageUrls.delete(nextUrl);
     } catch {
-      // The normal stage error handling remains the source of truth.
+      if (generation !== previewGeneration || selectedB !== index) return;
+      failedImageUrls.add(nextUrl);
+      playback.failed(revision.key, "Playback stopped: page image could not load");
     }
   }
   if (generation !== previewGeneration || selectedB !== index) return;
@@ -1314,6 +1422,11 @@ async function previewRevision(index: number) {
   updateComparison();
   updatePreviewPending();
   preloadNeighborPages();
+  if (revision.render?.phase === "ready") {
+    if (mode !== "heatmap") playback.ready(revision.key);
+  } else {
+    playback.failed(revision.key, `Playback stopped: ${phaseLabel(revision.render)}`);
+  }
 }
 
 function preloadImage(url: string): Promise<void> {

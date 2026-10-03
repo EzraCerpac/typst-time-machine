@@ -827,6 +827,45 @@ select,
   text-transform: uppercase;
 }
 
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.playback-controls button,
+.playback-controls select {
+  min-height: 30px;
+  border: 1px solid #b2bfbe;
+  border-radius: 3px;
+  padding: 4px 8px;
+  color: var(--graphite);
+  background: var(--paper-bright);
+  font: 600 11px/1.2 "SFMono-Regular", Consolas, monospace;
+}
+
+.playback-controls button {
+  min-width: 58px;
+  cursor: pointer;
+}
+
+.playback-controls button[aria-pressed="true"] {
+  color: white;
+  border-color: var(--cyan);
+  background: var(--cyan);
+}
+
+.playback-controls button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#playback-status {
+  max-width: 140px;
+  color: var(--graphite-soft);
+  font: 10px/1.3 "SFMono-Regular", Consolas, monospace;
+}
+
 .revision-track,
 .revision-scrubber input {
   width: 100%;
@@ -1155,6 +1194,13 @@ select,
 }
 
 @media (max-width: 980px) {
+  .revision-scrubber {
+    grid-template-columns: max-content minmax(100px, 1fr);
+  }
+
+  .revision-scrubber output {
+    grid-column: 1 / -1;
+  }
   .repo-facts span:not(.vcs),
   .repo-facts strong {
     display: none;
